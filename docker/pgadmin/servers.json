@@ -1,0 +1,15 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "TaskManager Local",
+      "Group": "Development",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "taskmanager_db",
+      "Username": "taskmanager_user",
+      "Password": "taskmanager_pass",
+      "SSLMode": "prefer",
+      "Comment": "Local development PostgreSQL instance"
+    }
+  }
+}

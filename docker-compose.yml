@@ -1,0 +1,93 @@
+version: "3.9"
+
+# Named volumes are declared here at the top level so Docker manages
+# their lifecycle independently of the containers. This means your
+# data survives a `docker-compose down` — only `docker-compose down -v`
+# will destroy it.
+volumes:
+  postgres_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+networks:
+  taskmanager_network:
+    driver: bridge
+
+services:
+
+  # ── PostgreSQL 15 ──────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: taskmanager_postgres
+    restart: unless-stopped
+    networks:
+      - taskmanager_network
+
+    environment:
+      POSTGRES_DB: taskmanager_db
+      POSTGRES_USER: taskmanager_user
+      POSTGRES_PASSWORD: taskmanager_pass
+      # Performance tuning for a local dev environment.
+      # These are safe for development — do NOT carry these into production
+      # without a proper DBA review against your actual hardware specs.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=en_US.utf8 --lc-ctype=en_US.utf8"
+
+    ports:
+      # Host:Container — exposes Postgres on localhost:5432 so your IDE's
+      # database tool (IntelliJ, DBeaver) can connect directly without
+      # going through pgAdmin.
+      - "5432:5432"
+
+    volumes:
+      # Named volume for data persistence across container restarts.
+      - postgres_data:/var/lib/postgresql/data
+      # Drop any *.sql or *.sh init scripts here and they will run
+      # automatically on first container creation (when the volume is empty).
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d
+
+    healthcheck:
+      # pg_isready exits 0 only when the server is fully accepting connections.
+      # The Spring Boot service below depends_on this check before starting,
+      # preventing the "connection refused" race condition on cold starts.
+      test: ["CMD-SHELL", "pg_isready -U taskmanager_user -d taskmanager_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── pgAdmin 4 ──────────────────────────────────────────────────────────────
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: taskmanager_pgadmin
+    restart: unless-stopped
+    networks:
+      - taskmanager_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@taskmanager.dev
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: "False"   # Single-user desktop mode — no login screen
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+
+    ports:
+      - "5050:80"
+
+    volumes:
+      # Persists pgAdmin's saved server connections and preferences so you
+      # don't have to re-register the Postgres server after every restart.
+      - pgadmin_data:/var/lib/pgadmin
+      # Pre-loads a server definition so the Postgres instance appears
+      # automatically in pgAdmin without manual registration.
+      # The file is defined below in the comments — create it if you want auto-registration.
+      - ./docker/pgadmin/servers.json:/pgadmin4/servers.json:ro
+
+    healthcheck:
+      test: ["CMD", "wget", "-O", "-", "http://localhost:80/misc/ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
