@@ -1,10 +1,10 @@
+// FILE: AuthController.java
 package com.taskmanager.core.controller;
 
-import com.taskmanager.core.dto.request.LoginRequest;
-import com.taskmanager.core.dto.request.RefreshRequest;
-import com.taskmanager.core.dto.request.RegisterRequest;
+import com.taskmanager.core.dto.request.*;
 import com.taskmanager.core.dto.response.ApiResponse;
 import com.taskmanager.core.dto.response.AuthResponse;
+import com.taskmanager.core.dto.response.RegisterResponse;
 import com.taskmanager.core.service.AuthService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -17,11 +17,8 @@ import java.util.UUID;
 
 /**
  * All auth endpoints live under /api/v1/auth.
- * These three are declared public in SecurityConfig — no Bearer token required.
- *
- * The User-Agent header is captured as deviceInfo so the RefreshToken
- * record knows which device it was issued to. This enables a "logged-in devices"
- * screen in the Flutter app later (similar to WhatsApp / Telegram).
+ * Public (no Bearer token): register, login, refresh, verify-email,
+ * resend-verification, forgot-password, reset-password — see SecurityConfig.
  */
 @RestController
 @RequestMapping("/api/v1/auth")
@@ -35,30 +32,26 @@ public class AuthController {
 
     /**
      * POST /api/v1/auth/register
-     * Creates a new account and returns a token pair immediately.
-     * Flutter does not need a separate login call after registration.
      *
-     * 201 Created on success.
-     * 400 Bad Request on validation failure (e.g., weak password, invalid email).
-     * 409 Conflict if email is already registered.
+     * Creates the account unverified and emails a 6-digit code. No token
+     * pair is returned — Flutter should route to the verify-email screen,
+     * passing along the email from the response.
+     *
+     * 201 Created / 400 Bad Request / 409 Conflict (email already registered).
      */
     @PostMapping("/register")
-    public ResponseEntity<ApiResponse<AuthResponse>> register(
-            @Valid @RequestBody RegisterRequest request,
-            HttpServletRequest httpRequest
+    public ResponseEntity<ApiResponse<RegisterResponse>> register(
+            @Valid @RequestBody RegisterRequest request
     ) {
-        AuthResponse response = authService.register(request, extractDeviceInfo(httpRequest));
+        RegisterResponse response = authService.register(request);
         return ResponseEntity
                 .status(HttpStatus.CREATED)
-                .body(ApiResponse.ok("Account created successfully", response));
+                .body(ApiResponse.ok("Account created. Check your email for a verification code.", response));
     }
 
     /**
      * POST /api/v1/auth/login
-     * Validates credentials and returns a token pair.
-     *
-     * 200 OK on success.
-     * 401 Forbidden on bad credentials (never reveals whether email exists).
+     * 200 OK / 401 on bad credentials or an unverified account.
      */
     @PostMapping("/login")
     public ResponseEntity<ApiResponse<AuthResponse>> login(
@@ -69,14 +62,6 @@ public class AuthController {
         return ResponseEntity.ok(ApiResponse.ok("Login successful", response));
     }
 
-    /**
-     * POST /api/v1/auth/refresh
-     * Exchanges a refresh token for a new access token + new refresh token.
-     * Flutter's HTTP interceptor should call this automatically on 401.
-     *
-     * 200 OK on success.
-     * 401 if the refresh token is invalid, expired, or already revoked.
-     */
     @PostMapping("/refresh")
     public ResponseEntity<ApiResponse<AuthResponse>> refresh(
             @Valid @RequestBody RefreshRequest request,
@@ -86,13 +71,6 @@ public class AuthController {
         return ResponseEntity.ok(ApiResponse.ok("Token refreshed", response));
     }
 
-    /**
-     * POST /api/v1/auth/logout
-     * Revokes all refresh tokens for the calling user (all devices).
-     * Requires a valid access token — so the user must be authenticated.
-     *
-     * Returns 204 No Content — nothing to return after logout.
-     */
     @PostMapping("/logout")
     public ResponseEntity<Void> logout(
             @AuthenticationPrincipal UUID currentUserId
@@ -102,10 +80,65 @@ public class AuthController {
     }
 
     /**
-     * Extracts device info from the User-Agent header.
-     * Flutter's http package sends a User-Agent automatically.
-     * Truncated to 255 chars to match the DB column constraint.
+     * POST /api/v1/auth/verify-email
+     * Confirms the registration code and logs the user in immediately.
+     * 200 OK / 400 Bad Request if the code is wrong, expired, or already used.
      */
+    @PostMapping("/verify-email")
+    public ResponseEntity<ApiResponse<AuthResponse>> verifyEmail(
+            @Valid @RequestBody VerifyEmailRequest request,
+            HttpServletRequest httpRequest
+    ) {
+        AuthResponse response = authService.verifyEmail(request, extractDeviceInfo(httpRequest));
+        return ResponseEntity.ok(ApiResponse.ok("Email verified", response));
+    }
+
+    /**
+     * POST /api/v1/auth/resend-verification
+     * Always 200 — never reveals whether the email exists or is already verified.
+     *
+     * FIX: was bound to UpdateUserRequest.ResendVerificationRequest, a
+     * duplicate nested record accidentally left in UpdateUserRequest.java.
+     * That type doesn't match what AuthService.resendVerificationCode()
+     * declares (the standalone ResendVerificationRequest record), so this
+     * failed to compile. Now bound to the correct top-level DTO, and the
+     * duplicate nested record has been removed from UpdateUserRequest.java.
+     */
+    @PostMapping("/resend-verification")
+    public ResponseEntity<ApiResponse<Void>> resendVerification(
+            @Valid @RequestBody ResendVerificationRequest request
+    ) {
+        authService.resendVerificationCode(request);
+        return ResponseEntity.ok(ApiResponse.ok(
+                "If that account exists and isn't verified yet, a new code has been sent.", null));
+    }
+
+    /**
+     * POST /api/v1/auth/forgot-password
+     * Always 200 — never reveals whether the email exists.
+     */
+    @PostMapping("/forgot-password")
+    public ResponseEntity<ApiResponse<Void>> forgotPassword(
+            @Valid @RequestBody ForgotPasswordRequest request
+    ) {
+        authService.forgotPassword(request);
+        return ResponseEntity.ok(ApiResponse.ok(
+                "If that email is registered, a reset code has been sent.", null));
+    }
+
+    /**
+     * POST /api/v1/auth/reset-password
+     * On success, every existing session for the account is revoked.
+     * 200 OK / 400 Bad Request if the code is wrong, expired, or already used.
+     */
+    @PostMapping("/reset-password")
+    public ResponseEntity<ApiResponse<Void>> resetPassword(
+            @Valid @RequestBody ResetPasswordRequest request
+    ) {
+        authService.resetPassword(request);
+        return ResponseEntity.ok(ApiResponse.ok("Password reset. Please log in again.", null));
+    }
+
     private String extractDeviceInfo(HttpServletRequest request) {
         String userAgent = request.getHeader("User-Agent");
         if (userAgent == null) return "Unknown";

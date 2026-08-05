@@ -1,17 +1,16 @@
 package com.taskmanager.core.dto.request;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
-/**
- * POST /api/v1/projects
- *
- * color is optional — the service defaults to "#6366F1" (indigo) if absent,
- * matching the entity default. Flutter's color picker sends a hex string;
- * the @Pattern ensures it's a valid 6-digit hex code.
- */
+import java.util.UUID;
+
 public record CreateProjectRequest(
+
+        @NotNull(message = "Team ID is required")
+        UUID teamId,
 
         @NotBlank(message = "Project name is required")
         @Size(min = 1, max = 150, message = "Name must be between 1 and 150 characters")

@@ -25,8 +25,7 @@ public interface TaskService {
     Page<TaskResponse> getTasksByProject(UUID ownerId, UUID projectId, Pageable pageable);
 
     /** Paginated — replaces the unbounded List<TaskResponse> variant. */
-    Page<TaskResponse> getTodaysTasks(UUID ownerId, Pageable pageable);
-
+    Page<TaskResponse> getTodaysTasks(UUID ownerId, String timeZoneId, Pageable pageable);
     /** Paginated — replaces the unbounded List<TaskResponse> variant. */
     Page<TaskResponse> getOverdueTasks(UUID ownerId, Pageable pageable);
 

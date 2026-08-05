@@ -18,24 +18,47 @@ import java.util.UUID;
 
 @Repository
 public interface TaskRepository extends JpaRepository<Task, UUID>,
-        JpaSpecificationExecutor<Task> {     // ← required for getTasks() Specification support
-
-    @EntityGraph(attributePaths = {"project"})
-    Page<Task> findByProjectIdAndOwnerIdOrderByDueDateAscPriorityLevelDesc(
-            UUID projectId, UUID ownerId, Pageable pageable
-    );
-
-    Optional<Task> findByIdAndOwnerId(UUID taskId, UUID ownerId);
-
-    Optional<Task> findByIdAndOwnerIdAndStatusNot(UUID taskId, UUID ownerId, TaskStatus status);
+        JpaSpecificationExecutor<Task> {
 
     /**
-     * Overdue tasks — now paginated.
-     * The List variant was removed; callers pass a Pageable and receive a Page.
-     * The JPQL is unchanged apart from the return type and added Pageable param.
+     * Team-wide project task list — any team member viewing a project sees
+     * every task in it, not just their own. Replaces the old
+     * owner-scoped findByProjectIdAndOwnerIdOrderByDueDateAscPriorityLevelDesc.
+     */
+    @EntityGraph(attributePaths = {"project"})
+    Page<Task> findByProjectIdOrderByDueDateAscPriorityLevelDesc(UUID projectId, Pageable pageable);
+
+    /**
+     * Single-task lookup for the read-access path. Team is reached via
+     * project.team in TaskServiceImpl, so we eagerly fetch both here to
+     * avoid a second round trip / N+1 when the service checks team access.
+     * Replaces the old owner-scoped findByIdAndOwnerIdAndStatusNot.
+     */
+    @EntityGraph(attributePaths = {"project", "project.team"})
+    Optional<Task> findByIdAndStatusNot(UUID taskId, TaskStatus status);
+
+    /**
+     * "Today"/"Overdue" stay personal (owner-scoped) — see
+     * TaskServiceImpl's class Javadoc for why these weren't made team-wide.
+     *
+     * FIX: previously combined @EntityGraph(attributePaths = {"project"})
+     * with a custom @Query returning Page<Task>. Spring Data has to
+     * auto-derive a COUNT query from the JPQL and reconcile it against the
+     * entity graph hint for pagination — this combination is unreliable
+     * (throws at query-derivation time on some Hibernate/Spring Data Boot
+     * 4.x combos), which is what was producing the 500s on /tasks/today
+     * and /tasks/overdue. The other paginated queries in this interface
+     * either use @EntityGraph with a *derived* (non-@Query) method, or use
+     * a Specification — neither of which hit this issue.
+     *
+     * Fix: drop @EntityGraph here and fetch the project explicitly via
+     * "LEFT JOIN FETCH t.project" inside the JPQL instead. This avoids the
+     * count-query/entity-graph interaction entirely while still avoiding
+     * N+1 when the response DTO calls task.getProject().
      */
     @Query("""
         SELECT t FROM Task t
+        LEFT JOIN FETCH t.project
         WHERE t.owner.id = :ownerId
           AND t.dueDate < :now
           AND t.status NOT IN (
@@ -48,11 +71,9 @@ public interface TaskRepository extends JpaRepository<Task, UUID>,
                                        @Param("now")     Instant now,
                                        Pageable pageable);
 
-    /**
-     * Today's tasks — now paginated.
-     */
     @Query("""
         SELECT t FROM Task t
+        LEFT JOIN FETCH t.project
         WHERE t.owner.id  = :ownerId
           AND t.dueDate  >= :startOfDay
           AND t.dueDate  <  :endOfDay
@@ -67,6 +88,7 @@ public interface TaskRepository extends JpaRepository<Task, UUID>,
                                       @Param("endOfDay")   Instant endOfDay,
                                       Pageable pageable);
 
+    @EntityGraph(attributePaths = {"project"})
     @Query("""
         SELECT t FROM Task t
         WHERE t.owner.id    = :ownerId

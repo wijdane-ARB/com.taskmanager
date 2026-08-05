@@ -1,3 +1,4 @@
+// FILE: GlobalExceptionHandler.java
 package com.taskmanager.core.exception;
 
 import com.taskmanager.core.dto.response.ApiResponse;
@@ -13,11 +14,6 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-/**
- * Centralizes all exception-to-HTTP-response mapping.
- * Every exception thrown anywhere in the service layer is caught here,
- * so controllers stay clean and the error format is always consistent.
- */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
@@ -37,6 +33,13 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.error(ex.getMessage(), null));
     }
 
+    @ExceptionHandler(InvalidCodeException.class)
+    public ResponseEntity<ApiResponse<Void>> handleInvalidCode(InvalidCodeException ex) {
+        return ResponseEntity
+                .status(HttpStatus.BAD_REQUEST)
+                .body(ApiResponse.error(ex.getMessage(), null));
+    }
+
     @ExceptionHandler(IllegalStateException.class)
     public ResponseEntity<ApiResponse<Void>> handleIllegalState(IllegalStateException ex) {
         return ResponseEntity
@@ -44,10 +47,6 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.error(ex.getMessage(), null));
     }
 
-    /**
-     * Handles @Valid failures on request DTOs.
-     * Returns a map of field → error message for the client to display inline.
-     */
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ApiResponse<Void>> handleValidationErrors(
             MethodArgumentNotValidException ex
@@ -60,7 +59,7 @@ public class GlobalExceptionHandler {
                 .collect(Collectors.toMap(
                         FieldError::getField,
                         FieldError::getDefaultMessage,
-                        (existing, replacement) -> existing // keep first error per field
+                        (existing, replacement) -> existing
                 ));
 
         return ResponseEntity

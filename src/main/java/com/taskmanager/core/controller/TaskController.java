@@ -117,9 +117,10 @@ public class TaskController {
     @GetMapping("/today")
     public ResponseEntity<ApiResponse<Page<TaskResponse>>> getTodaysTasks(
             @AuthenticationPrincipal UUID currentUserId,
+            @RequestHeader(value = "X-Timezone", required = false) String timeZoneId,
             @PageableDefault(size = 20) Pageable pageable
     ) {
-        Page<TaskResponse> tasks = taskService.getTodaysTasks(currentUserId, pageable);
+        Page<TaskResponse> tasks = taskService.getTodaysTasks(currentUserId, timeZoneId, pageable);
         return ResponseEntity.ok(ApiResponse.ok(tasks));
     }
 

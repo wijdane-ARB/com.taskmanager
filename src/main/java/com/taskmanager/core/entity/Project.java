@@ -13,18 +13,20 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * A Project is the primary grouping unit for Tasks.
- * The free tier is limited to 5 active projects — this limit is
- * enforced in the service layer, not at the database level.
+ * A Project is the primary grouping unit for Tasks and now belongs to a
+ * Team rather than a single User. Every member of the team has access.
  *
- * 'color' stores a hex string (e.g., "#FF6B6B") used by the
- * React Native UI for project colour coding.
+ * 'owner_id' column is kept (mapped to createdBy) for audit purposes only —
+ * it no longer gates access. Team membership does that now.
+ *
+ * The free tier is limited to 5 active projects PER TEAM — enforced in
+ * the service layer against the team owner's subscription status.
  */
 @Entity
 @Table(
         name = "projects",
         indexes = {
-                @Index(name = "idx_projects_owner_id", columnList = "owner_id"),
+                @Index(name = "idx_projects_team_id", columnList = "team_id"),
                 @Index(name = "idx_projects_status", columnList = "status")
         }
 )
@@ -45,7 +47,7 @@ public class Project {
     private String description;
 
     @Column(name = "color", length = 7)
-    private String color = "#6366F1"; // Default indigo
+    private String color = "#6366F1";
 
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 20)
@@ -59,13 +61,16 @@ public class Project {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
-    // ManyToOne back to User. nullable=false enforces that every
-    // project must have an owner at the DB constraint level.
+    // Team is the access boundary — any TeamMember can see/use this project.
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "owner_id", nullable = false)
-    private User owner;
+    @JoinColumn(name = "team_id", nullable = false)
+    private Team team;
 
-    // Project owns the tasks collection.
+    // Audit only ("created by") — never used for access checks.
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "owner_id", nullable = false, updatable = false)
+    private User createdBy;
+
     @OneToMany(
             mappedBy = "project",
             cascade = CascadeType.ALL,
@@ -74,17 +79,14 @@ public class Project {
     )
     private List<Task> tasks = new ArrayList<>();
 
-    // --- Constructors ---
-
     protected Project() {}
 
-    public Project(String name, String description, User owner) {
+    public Project(String name, String description, Team team, User createdBy) {
         this.name = name;
         this.description = description;
-        this.owner = owner;
+        this.team = team;
+        this.createdBy = createdBy;
     }
-
-    // --- Convenience helpers ---
 
     public void addTask(Task task) {
         tasks.add(task);
@@ -95,8 +97,6 @@ public class Project {
         tasks.remove(task);
         task.setProject(null);
     }
-
-    // --- Getters & Setters ---
 
     public UUID getId() { return id; }
 
@@ -112,8 +112,10 @@ public class Project {
     public ProjectStatus getStatus() { return status; }
     public void setStatus(ProjectStatus status) { this.status = status; }
 
-    public User getOwner() { return owner; }
-    public void setOwner(User owner) { this.owner = owner; }
+    public Team getTeam() { return team; }
+    public void setTeam(Team team) { this.team = team; }
+
+    public User getCreatedBy() { return createdBy; }
 
     public List<Task> getTasks() { return tasks; }
 

@@ -1,131 +1,101 @@
-# ── Server ─────────────────────────────────────────────────────────────────
+# FILE: application.yml
 server:
   port: 8080
-  # Return structured error details in responses. Combined with our
-  # GlobalExceptionHandler, this gives the React Native client consistent
-  # error payloads on every failure mode.
   error:
 
-
-# ── Spring Core ────────────────────────────────────────────────────────────
 spring:
+  data:
+    redis:
+      host: localhost
+      port: 6379
   application:
     name: taskmanager-core
 
-  # ── DataSource ─────────────────────────────────────────────────────────
   datasource:
-    # Matches the POSTGRES_* environment variables in docker-compose.yml.
-    # In CI or production, override these via environment variables or
-    # a secrets manager — never commit real credentials to source control.
-    url: jdbc:postgresql://localhost:5432/taskmanager_db
+    url: jdbc:postgresql://localhost:5433/taskmanager_db
     username: taskmanager_user
     password: taskmanager_pass
     driver-class-name: org.postgresql.Driver
-
-    # HikariCP is Spring Boot's default connection pool.
-    # These values are tuned for a single-developer local environment.
-    # For production, size the pool based on:
-    #   pool_size = (core_count * 2) + effective_spindle_count
     hikari:
       pool-name: TaskManagerHikariPool
       maximum-pool-size: 10
       minimum-idle: 2
-      idle-timeout: 30000        # 30s — reclaim idle connections quickly in dev
-      connection-timeout: 20000  # 20s — fail fast if Postgres is unreachable
-      max-lifetime: 1800000      # 30min — recycle connections before Postgres kills them
-      # Validates a connection is still alive before handing it to the app.
-      # Prevents "broken pipe" errors after Postgres restarts.
+      idle-timeout: 30000
+      connection-timeout: 20000
+      max-lifetime: 1800000
       connection-test-query: SELECT 1
 
-  # ── JPA / Hibernate ────────────────────────────────────────────────────
   jpa:
-    # 'update' is appropriate for local development — Hibernate will apply
-    # schema changes without dropping existing data.
-    # NEVER use 'update' or 'create-drop' in production.
-    # Use Flyway or Liquibase for production migrations instead.
     hibernate:
-      ddl-auto: update
+      # FIX: must stay "validate", not "update". Hibernate's ddl-auto=update
+      # trying to manage schema in parallel with Flyway is what caused the
+      # original "column team_id does not exist" corruption — Hibernate ran
+      # its own blind ALTER TABLE before Flyway's correctly-ordered V3
+      # migration ever got a chance. Flyway is the single source of truth
+      # for schema now; Hibernate only verifies entities match it.
+      ddl-auto: validate
     properties:
       hibernate:
-        # Explicitly set the dialect so Hibernate doesn't have to guess.
         dialect: org.hibernate.dialect.PostgreSQLDialect
-        # Format SQL in logs so it's human-readable when DEBUG is enabled.
         format_sql: true
-        # Adds comments to generated SQL identifying which query it came from.
-        # Invaluable when profiling N+1 issues in development.
         use_sql_comments: true
-        # JDBC batch size — groups multiple INSERT/UPDATE statements into a
-        # single round trip. Meaningful performance gain for bulk operations
-        # like creating multiple tasks at once.
         jdbc:
           batch_size: 25
         order_inserts: true
         order_updates: true
-    # Logs the generated SQL. Set to false to quiet the console once the
-    # schema is stable — it's verbose but essential during early development.
     show-sql: true
-    open-in-view: false  # Disable OSIV — prevents lazy-loading surprises in controllers
+    open-in-view: false
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    locations: classpath:db/migration
 
-  # ── Jackson (JSON serialization) ────────────────────────────────────────
   jackson:
     deserialization:
-      # Prevents requests from breaking when the client sends extra fields
-      # the server doesn't recognise — useful during API iteration.
       fail-on-unknown-properties: false
     default-property-inclusion: non_null
-# ── Logging ────────────────────────────────────────────────────────────────
+
+  # ── Mail (verification / password-reset codes) ──────────────────────────
+  # Fill in MAIL_USERNAME / MAIL_PASSWORD as environment variables — never
+  # commit real SMTP credentials to source control.
+  # Gmail example: host smtp.gmail.com, port 587, username = your Gmail
+  # address, password = a 16-char Gmail "App Password" (not your login
+  # password — Gmail rejects plain SMTP auth with regular passwords).
+  mail:
+    host: ${MAIL_HOST:smtp.gmail.com}
+    port: ${MAIL_PORT:587}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+
+# ── App-specific settings ────────────────────────────────────────────────
+app:
+  mail:
+    trust-proxy-headers: false
+    from: ${MAIL_FROM:no-reply@taskmanager.app}
+    code-expiry-minutes: 15
+
 logging:
   level:
-    # Root logger — WARN keeps third-party library noise out of the console.
     root: WARN
-
-    # Our application package — DEBUG gives full visibility into service
-    # method calls, SQL, and transaction boundaries during development.
     com.taskmanager.core: DEBUG
-
-    # Logs the actual SQL Hibernate generates. Pair with show-sql: true above.
-    # Switch to WARN once the schema is stable to reduce console noise.
     org.hibernate.SQL: DEBUG
-
-    # Logs the bind parameter values for each query (the actual UUIDs,
-    # strings, and timestamps substituted into the ? placeholders).
-    # Essential for debugging incorrect query results.
     org.hibernate.orm.jdbc.bind: TRACE
-
-    # HikariCP — INFO shows pool startup and shutdown. Bump to DEBUG
-    # temporarily if you suspect connection pool exhaustion.
     com.zaxxer.hikari: INFO
-
-    # Spring Web — DEBUG logs every incoming request with its resolved
-    # handler method. Useful when wiring up new endpoints.
     org.springframework.web: DEBUG
-
-    # Spring Security — set to DEBUG only when debugging auth filter chains.
-    # Very verbose — leave at WARN during normal development.
     org.springframework.security: WARN
-
-    # Spring Transactions — DEBUG shows every @Transactional boundary
-    # (begin, commit, rollback). Useful for verifying the Outbox pattern
-    # writes are inside the correct transaction scope.
     org.springframework.transaction: DEBUG
+    org.flywaydb: DEBUG   # keep this on until we confirm V1–V4 all apply cleanly
 
   pattern:
-    # Console pattern includes timestamp, level, thread, logger, and message.
-    # The %clr directives add colour in terminals that support ANSI codes
-    # (IntelliJ, macOS Terminal, Windows Terminal).
     console: "%clr(%d{yyyy-MM-dd HH:mm:ss.SSS}){faint} %clr(%5p) %clr([%15.15t]){faint} %clr(%-40.40logger{39}){cyan} %clr(:){faint} %m%n%wEx"
 
-  # Dev: localhost ports for the web admin UI (3000) and a Flutter web preview (8081).
-  # Prod: override via the CORS_ALLOWED_ORIGINS environment variable in your deployment
-  #       (Docker / k8s secret / ECS task definition):
-  #
-  #   CORS_ALLOWED_ORIGINS: https://app.yourdomain.com,https://admin.yourdomain.com
-
   cors:
-    # Comma-separated list — Spring's @Value splits on ',' automatically
-    # when the target type is List<String>.
     allowed-origins:
-      - http://localhost:3000   # React / web admin dev server
-      - http://localhost:8081   # Flutter web debug preview
-      # Production origins are injected via the CORS_ALLOWED_ORIGINS env var:
-      # - ${CORS_ALLOWED_ORIGINS:}
+      - http://localhost:3000
+      - http://localhost:8081

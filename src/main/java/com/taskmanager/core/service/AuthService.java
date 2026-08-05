@@ -1,38 +1,55 @@
+// FILE: AuthService.java
 package com.taskmanager.core.service;
 
-import com.taskmanager.core.dto.request.LoginRequest;
-import com.taskmanager.core.dto.request.RefreshRequest;
-import com.taskmanager.core.dto.request.RegisterRequest;
+import com.taskmanager.core.dto.request.*;
 import com.taskmanager.core.dto.response.AuthResponse;
+import com.taskmanager.core.dto.response.RegisterResponse;
+
+import java.util.UUID;
 
 public interface AuthService {
 
     /**
-     * Creates a new user account and returns a ready-to-use token pair.
-     * Flutter logs the user in immediately after registration — no separate
-     * login step required.
+     * Creates a new (unverified) account and sends a verification code by
+     * email. No token pair is issued — login is blocked until verifyEmail()
+     * succeeds.
      */
-    AuthResponse register(RegisterRequest request, String deviceInfo);
+    RegisterResponse register(RegisterRequest request);
 
     /**
      * Validates credentials and returns a token pair.
      * Throws UnauthorizedAccessException on bad credentials (never reveals
-     * whether the email exists — always the same generic error message).
+     * whether the email exists) and also if the account exists but the
+     * email has not been verified yet.
      */
     AuthResponse login(LoginRequest request, String deviceInfo);
 
-    /**
-     * Exchanges a valid, non-revoked refresh token for a new token pair.
-     * The old refresh token is revoked immediately (rotation).
-     * Throws UnauthorizedAccessException if the token is invalid, expired, or revoked.
-     */
     AuthResponse refresh(RefreshRequest request, String deviceInfo);
 
+    void logout(UUID userId);
+
     /**
-     * Revokes all refresh tokens for the calling user.
-     * The access token will continue to work until it expires naturally —
-     * this is acceptable for the 15-minute TTL. For instant revocation,
-     * add a Redis blocklist keyed on jti (JWT ID).
+     * Confirms the 6-digit code sent on registration, marks the account
+     * verified, and logs the user in immediately with a fresh token pair.
      */
-    void logout(java.util.UUID userId);
+    AuthResponse verifyEmail(VerifyEmailRequest request, String deviceInfo);
+
+    /**
+     * Issues a new verification code, invalidating any previous one.
+     * Silently no-ops if the account doesn't exist or is already verified —
+     * never leaks account state to the caller.
+     */
+    void resendVerificationCode(ResendVerificationRequest request);
+
+    /**
+     * Issues a password-reset code if the account exists. Always returns
+     * the same generic outcome regardless, to avoid account enumeration.
+     */
+    void forgotPassword(ForgotPasswordRequest request);
+
+    /**
+     * Validates the reset code, updates the password, and revokes all
+     * existing refresh tokens (forces re-login everywhere).
+     */
+    void resetPassword(ResetPasswordRequest request);
 }

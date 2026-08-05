@@ -1,3 +1,4 @@
+// FILE: SecurityConfig.java
 package com.taskmanager.core.config;
 
 import com.taskmanager.core.security.JwtAuthenticationFilter;
@@ -21,37 +22,12 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 import java.util.List;
 
-/**
- * Changes from the original:
- *
- * Added CORS configuration.
- *
- * Without it the browser's preflight OPTIONS request receives no
- * Access-Control-Allow-Origin header, so every fetch from a web app
- * or Flutter WebView is blocked before it reaches the JWT filter.
- * Spring Security rejects the preflight at the filter chain level —
- * the 401 response doesn't include CORS headers, so the browser
- * reports a CORS error, not an auth error, making this hard to debug.
- *
- * Allowed origins are injected from application properties so they
- * can differ between dev (localhost:*) and prod (your domain) without
- * a code change. The JWT filter is stateless so no credentials/cookies
- * need to be allowed.
- *
- * Allowed headers explicitly include Authorization so Bearer tokens
- * sent from the Flutter WebView aren't stripped by the browser.
- */
 @Configuration
 @EnableWebSecurity
 public class SecurityConfig {
 
     private final JwtAuthenticationFilter jwtAuthFilter;
 
-    /**
-     * Comma-separated list of allowed origins.
-     * In application.yml / environment:
-     *   cors.allowed-origins: http://localhost:3000,https://app.yourdomain.com
-     */
     @Value("${cors.allowed-origins:http://localhost:3000,http://localhost:8080}")
     private List<String> allowedOrigins;
 
@@ -71,7 +47,10 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/register").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/login").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/refresh").permitAll()
-                        // Preflight requests must be permitted or they hit the JWT filter and fail
+                        .requestMatchers(HttpMethod.POST, "/api/v1/auth/verify-email").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/auth/resend-verification").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/auth/forgot-password").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/auth/reset-password").permitAll()
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
                         .anyRequest().authenticated()
                 )
@@ -83,23 +62,11 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration config = new CorsConfiguration();
-
         config.setAllowedOrigins(allowedOrigins);
-
-        // Standard REST verbs + OPTIONS for preflight
         config.setAllowedMethods(List.of("GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"));
-
-        // Authorization must be explicitly listed — it is not a CORS-safelisted header.
-        // Content-Type is needed for JSON request bodies.
         config.setAllowedHeaders(List.of("Authorization", "Content-Type", "Accept"));
-
-        // Expose no extra response headers to the browser — least privilege.
         config.setExposedHeaders(List.of());
-
-        // No cookies or credentials — we're stateless JWT only
         config.setAllowCredentials(false);
-
-        // Cache preflight response for 1 hour (3600 s) — reduces OPTIONS round-trips
         config.setMaxAge(3600L);
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
@@ -107,10 +74,6 @@ public class SecurityConfig {
         return source;
     }
 
-    /**
-     * BCrypt cost 12 — ~4× more work than the default (10) for attackers,
-     * still ~300 ms on a modern CPU which is acceptable for a login endpoint.
-     */
     @Bean
     public PasswordEncoder passwordEncoder() {
         return new BCryptPasswordEncoder(12);

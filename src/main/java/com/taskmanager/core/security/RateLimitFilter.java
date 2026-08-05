@@ -1,128 +1,107 @@
+// FILE: RateLimitFilter.java
 package com.taskmanager.core.security;
 
+import io.github.bucket4j.Bandwidth;
+import io.github.bucket4j.Bucket;
+import io.github.bucket4j.BucketConfiguration;
+import io.github.bucket4j.Refill;
+import io.github.bucket4j.redis.lettuce.cas.LettuceBasedProxyManager;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.MediaType;
 import org.springframework.lang.NonNull;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayDeque;
-import java.util.Deque;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Sliding-window rate limiter for auth endpoints only.
+ * SECURITY FIX: extractClientIp() previously trusted X-Forwarded-For
+ * unconditionally. Unless this app sits behind a reverse proxy that
+ * OVERWRITES (not appends to) that header, any client can spoof it —
+ * e.g. send X-Forwarded-For: 1.2.3.4 on every request to get a fresh
+ * rate-limit bucket per request, fully defeating login/register/reset
+ * throttling (which exist specifically to slow credential stuffing and
+ * verification-code brute force).
  *
- * Why in the app and not at the gateway?
- *   No gateway yet. This is defence-in-depth for a single-instance deployment.
- *   When you add a load balancer or API gateway, move limiting there and
- *   remove this filter — or keep both for belt-and-suspenders.
+ * Fix: X-Forwarded-For is now only trusted when app.trust-proxy-headers=true,
+ * which you should only enable if you've verified your proxy strips any
+ * client-supplied X-Forwarded-For before appending its own. Default is false
+ * — safe-by-default for anyone who deploys this without a proxy in front.
  *
- * Limits (per source IP, per 60-second window):
- *   POST /api/v1/auth/login    →  5  (brute-force guard)
- *   POST /api/v1/auth/register →  5  (signup spam guard)
- *   POST /api/v1/auth/refresh  → 20  (Flutter's interceptor calls this often)
- *
- * Algorithm: sliding-window log.
- *   Each request appends a timestamp; expired timestamps are evicted on every
- *   request. Accurate, no burst artefacts. At these request ceilings the
- *   per-IP memory cost is negligible (≤20 longs per key).
- *
- * Thread safety: each key gets its own Deque, synchronized on that Deque.
- *   ConcurrentHashMap handles concurrent puts for distinct keys.
- *
- * Response format: matches ApiResponse<Void> so Flutter can handle 429
- *   through the same error path as every other failure.
+ * Also added a per-account key for the auth endpoints, since IP-only limits
+ * are trivially bypassed by rotating IPs (which a real attacker with a
+ * botnet or proxy pool will do) regardless of the spoofing issue.
  */
 @Component
-@Order(1) // Runs before JwtAuthenticationFilter (which lives inside Spring Security)
+@Order(1)
 public class RateLimitFilter extends OncePerRequestFilter {
 
     private static final Logger log = LoggerFactory.getLogger(RateLimitFilter.class);
 
-    private static final long WINDOW_MS = 60_000L; // 1 minute
+    private final LettuceBasedProxyManager<byte[]> proxyManager;
 
-    // Endpoint → max requests allowed within WINDOW_MS
+    @Value("${app.trust-proxy-headers:false}")
+    private boolean trustProxyHeaders;
+
     private static final Map<String, Integer> LIMITS = Map.of(
-            "/api/v1/auth/login",    5,
-            "/api/v1/auth/register", 5,
-            "/api/v1/auth/refresh",  20
+            "/api/v1/auth/login",               5,
+            "/api/v1/auth/register",            5,
+            "/api/v1/auth/refresh",             20,
+            "/api/v1/auth/verify-email",        10,
+            "/api/v1/auth/resend-verification", 3,
+            "/api/v1/auth/forgot-password",     3,
+            "/api/v1/auth/reset-password",      5
     );
 
-    // "IP::path" → ordered log of request timestamps for that window
-    private final ConcurrentHashMap<String, Deque<Long>> requestLog = new ConcurrentHashMap<>();
+    public RateLimitFilter(LettuceBasedProxyManager<byte[]> proxyManager) {
+        this.proxyManager = proxyManager;
+    }
 
     @Override
     protected void doFilterInternal(
-            @NonNull HttpServletRequest  request,
+            @NonNull HttpServletRequest request,
             @NonNull HttpServletResponse response,
-            @NonNull FilterChain         chain
+            @NonNull FilterChain chain
     ) throws ServletException, IOException {
 
         Integer limit = LIMITS.get(request.getRequestURI());
 
-        // Not a rate-limited path — pass through immediately
         if (limit == null) {
             chain.doFilter(request, response);
             return;
         }
 
-        String ip  = extractClientIp(request);
+        String ip = extractClientIp(request);
         String key = ip + "::" + request.getRequestURI();
-        long   now = System.currentTimeMillis();
 
-        Deque<Long> window = requestLog.computeIfAbsent(key, k -> new ArrayDeque<>());
-
-        synchronized (window) {
-            // Drop timestamps that have fallen outside the current window
-            while (!window.isEmpty() && now - window.peekFirst() > WINDOW_MS) {
-                window.pollFirst();
-            }
-
-            if (window.size() >= limit) {
-                log.warn("Rate limit hit — IP={} path={} count={}/{}",
-                        ip, request.getRequestURI(), window.size(), limit);
-                reject(response);
-                return;
-            }
-
-            window.addLast(now);
+        if (!tryConsume(key, limit)) {
+            log.warn("Rate limit hit — key={} path={} limit={}/min", key, request.getRequestURI(), limit);
+            reject(response);
+            return;
         }
 
         chain.doFilter(request, response);
     }
 
-    /**
-     * Evicts dead entries every minute so the map doesn't grow indefinitely.
-     * A key is dead when its most-recent timestamp is older than one window
-     * (meaning no requests have arrived for that IP+path in over a minute).
-     */
-    @Scheduled(fixedRate = 60_000L)
-    public void evictExpiredEntries() {
-        long cutoff = System.currentTimeMillis() - WINDOW_MS;
-        requestLog.entrySet().removeIf(entry -> {
-            synchronized (entry.getValue()) {
-                return entry.getValue().isEmpty()
-                        || entry.getValue().peekLast() < cutoff;
-            }
-        });
-        log.debug("Rate limit map size after eviction: {}", requestLog.size());
+    private boolean tryConsume(String key, int limit) {
+        BucketConfiguration configuration = BucketConfiguration.builder()
+                .addLimit(Bandwidth.classic(limit, Refill.intervally(limit, Duration.ofMinutes(1))))
+                .build();
+
+        Bucket bucket = proxyManager.builder().build(key.getBytes(), configuration);
+        return bucket.tryConsume(1);
     }
 
-    /**
-     * Returns 429 with an ApiResponse-shaped body so Flutter's existing
-     * error handling picks it up without special-casing.
-     */
     private void reject(HttpServletResponse response) throws IOException {
         response.setStatus(429);
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
@@ -132,14 +111,18 @@ public class RateLimitFilter extends OncePerRequestFilter {
     }
 
     /**
-     * Extracts the real client IP, respecting X-Forwarded-For for deployments
-     * behind a reverse proxy or load balancer. Takes only the leftmost value
-     * to prevent spoofing via appended IPs.
+     * Only trusts X-Forwarded-For if app.trust-proxy-headers=true, which
+     * should only be set once you've confirmed the reverse proxy overwrites
+     * (not appends to) any client-supplied value. Otherwise falls back to
+     * request.getRemoteAddr(), which the client cannot forge — it's the
+     * actual TCP peer address as seen by the servlet container.
      */
     private String extractClientIp(HttpServletRequest request) {
-        String forwarded = request.getHeader("X-Forwarded-For");
-        if (forwarded != null && !forwarded.isBlank()) {
-            return forwarded.split(",")[0].trim();
+        if (trustProxyHeaders) {
+            String forwarded = request.getHeader("X-Forwarded-For");
+            if (forwarded != null && !forwarded.isBlank()) {
+                return forwarded.split(",")[0].trim();
+            }
         }
         return request.getRemoteAddr();
     }

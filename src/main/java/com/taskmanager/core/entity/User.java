@@ -1,3 +1,4 @@
+// FILE: User.java
 package com.taskmanager.core.entity;
 
 import jakarta.persistence.*;
@@ -16,9 +17,29 @@ import java.util.UUID;
  * Core User entity. Uses UUID as the primary key to avoid
  * enumerable integer IDs being exposed in public APIs.
  *
- * The 'projects' relationship uses CascadeType.ALL — deleting a
- * user cascades to their projects, which cascades further to tasks.
- * This enforces referential integrity at the JPA layer, not just the DB.
+ * emailVerified gates login — see AuthServiceImpl.login(). New accounts
+ * start false and flip to true via POST /api/v1/auth/verify-email.
+ *
+ * FIX: 'projects' was declared @OneToMany(mappedBy = "owner", ...), but
+ * Project's field is named 'createdBy' (see Project.java — the owner
+ * relationship was intentionally renamed to make clear it's audit-only,
+ * not an access-control boundary; Team membership governs access now).
+ * mappedBy="owner" referenced a field that doesn't exist on Project,
+ * which fails at Hibernate bootstrap (MappingException), not just at
+ * compile time. Corrected to mappedBy="createdBy".
+ *
+ * FIX: removed addProject()/removeProject(). They called
+ * project.setOwner(this) / project.setOwner(null) — a method that no
+ * longer exists on Project, since createdBy is set once in Project's
+ * constructor and has no setter by design (immutable audit field).
+ * These helpers were also confirmed dead code (IDE: "never used") —
+ * nothing in the codebase creates a Project by first attaching it to a
+ * User's collection; ProjectServiceImpl.createProject() constructs
+ * Project directly and saves it via ProjectRepository instead.
+ *
+ * FIX: restored the `= new ArrayList<>()` default on `projects`. A
+ * transient (not-yet-persisted) User calling getProjects() before being
+ * saved/reloaded would otherwise NPE instead of returning an empty list.
  */
 @Entity
 @Table(
@@ -50,10 +71,13 @@ public class User {
     private String passwordHash;
 
     // Tracks whether the user has an active Pro subscription.
-    // Checked by the API gateway / service layer before serving
-    // any Pro-tier features (AI scheduling, deep reports, etc.)
     @Column(name = "is_pro_subscriber", nullable = false)
     private boolean isProSubscriber = false;
+
+    // Gates login. Set true by AuthServiceImpl.verifyEmail() once the
+    // registration code is confirmed.
+    @Column(name = "email_verified", nullable = false)
+    private boolean emailVerified = false;
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
@@ -63,10 +87,14 @@ public class User {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
-    // One user owns many projects. FetchType.LAZY is mandatory —
-    // never eagerly load a collection on a root entity.
+    // Read-only view of projects this user created. Kept lazy and
+    // unmodified-by-app-code on purpose — Project rows are created and
+    // deleted directly via ProjectRepository/ProjectServiceImpl, not
+    // through this collection. CascadeType.ALL + orphanRemoval still
+    // gives us "deleting a user cascades to their created projects"
+    // at the JPA layer.
     @OneToMany(
-            mappedBy = "owner",
+            mappedBy = "createdBy",
             cascade = CascadeType.ALL,
             orphanRemoval = true,
             fetch = FetchType.LAZY
@@ -81,18 +109,6 @@ public class User {
         this.displayName = displayName;
         this.email = email;
         this.passwordHash = passwordHash;
-    }
-
-    // --- Convenience relationship helpers ---
-
-    public void addProject(Project project) {
-        projects.add(project);
-        project.setOwner(this);
-    }
-
-    public void removeProject(Project project) {
-        projects.remove(project);
-        project.setOwner(null);
     }
 
     // --- Getters & Setters ---
@@ -110,6 +126,9 @@ public class User {
 
     public boolean isProSubscriber() { return isProSubscriber; }
     public void setProSubscriber(boolean proSubscriber) { isProSubscriber = proSubscriber; }
+
+    public boolean isEmailVerified() { return emailVerified; }
+    public void setEmailVerified(boolean emailVerified) { this.emailVerified = emailVerified; }
 
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }

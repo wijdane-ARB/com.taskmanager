@@ -10,28 +10,19 @@ import java.util.UUID;
 
 public interface ProjectService {
 
-    ProjectResponse createProject(UUID ownerId, CreateProjectRequest request);
+    ProjectResponse createProject(UUID callerId, CreateProjectRequest request);
 
-    List<ProjectResponse> getProjects(UUID ownerId, ProjectStatus status);
+    List<ProjectResponse> getProjects(UUID callerId, UUID teamId, ProjectStatus status);
 
-    ProjectResponse getProjectById(UUID ownerId, UUID projectId);
+    ProjectResponse getProjectById(UUID callerId, UUID projectId);
 
-    ProjectResponse updateProject(UUID ownerId, UUID projectId, UpdateProjectRequest request);
+    ProjectResponse updateProject(UUID callerId, UUID projectId, UpdateProjectRequest request);
 
-    ProjectResponse archiveProject(UUID ownerId, UUID projectId);
+    ProjectResponse archiveProject(UUID callerId, UUID projectId);
 
-    /**
-     * Transitions a project from ACTIVE to COMPLETED.
-     * COMPLETED is a terminal-ish state meaning "all work is done" —
-     * it can still be reactivated (re-enforcing the free-tier limit)
-     * or archived for cleanup.
-     *
-     * Previously ProjectStatus.COMPLETED existed in the enum but had no
-     * reachable transition anywhere in the codebase — dead code.
-     */
-    ProjectResponse completeProject(UUID ownerId, UUID projectId);
+    ProjectResponse completeProject(UUID callerId, UUID projectId);
 
-    ProjectResponse reactivateProject(UUID ownerId, UUID projectId);
+    ProjectResponse reactivateProject(UUID callerId, UUID projectId);
 
-    void deleteProject(UUID ownerId, UUID projectId);
+    void deleteProject(UUID callerId, UUID projectId);
 }
