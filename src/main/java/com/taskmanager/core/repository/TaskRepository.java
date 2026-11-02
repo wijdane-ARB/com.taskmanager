@@ -21,60 +21,50 @@ public interface TaskRepository extends JpaRepository<Task, UUID>,
         JpaSpecificationExecutor<Task> {
 
     /**
-     * Team-wide project task list — any team member viewing a project sees
-     * every task in it, not just their own. Replaces the old
-     * owner-scoped findByProjectIdAndOwnerIdOrderByDueDateAscPriorityLevelDesc.
+     * Team-wide project task list.
+     *
+     * FIX: the old findByProjectIdOrderByDueDateAscPriorityLevelDesc had no
+     * status filter, so soft-deleted (CANCELLED) tasks kept showing up in
+     * project lists. Callers pass TaskStatus.CANCELLED as the excluded status.
      */
     @EntityGraph(attributePaths = {"project"})
-    Page<Task> findByProjectIdOrderByDueDateAscPriorityLevelDesc(UUID projectId, Pageable pageable);
+    Page<Task> findByProjectIdAndStatusNotOrderByDueDateAscPriorityLevelDesc(
+            UUID projectId, TaskStatus excludedStatus, Pageable pageable);
 
-    /**
-     * Single-task lookup for the read-access path. Team is reached via
-     * project.team in TaskServiceImpl, so we eagerly fetch both here to
-     * avoid a second round trip / N+1 when the service checks team access.
-     * Replaces the old owner-scoped findByIdAndOwnerIdAndStatusNot.
-     */
-    @EntityGraph(attributePaths = {"project", "project.team"})
+    @EntityGraph(attributePaths = {"project", "project.team", "attachments"})
     Optional<Task> findByIdAndStatusNot(UUID taskId, TaskStatus status);
 
-    /**
-     * "Today"/"Overdue" stay personal (owner-scoped) — see
-     * TaskServiceImpl's class Javadoc for why these weren't made team-wide.
-     *
-     * FIX: previously combined @EntityGraph(attributePaths = {"project"})
-     * with a custom @Query returning Page<Task>. Spring Data has to
-     * auto-derive a COUNT query from the JPQL and reconcile it against the
-     * entity graph hint for pagination — this combination is unreliable
-     * (throws at query-derivation time on some Hibernate/Spring Data Boot
-     * 4.x combos), which is what was producing the 500s on /tasks/today
-     * and /tasks/overdue. The other paginated queries in this interface
-     * either use @EntityGraph with a *derived* (non-@Query) method, or use
-     * a Specification — neither of which hit this issue.
-     *
-     * Fix: drop @EntityGraph here and fetch the project explicitly via
-     * "LEFT JOIN FETCH t.project" inside the JPQL instead. This avoids the
-     * count-query/entity-graph interaction entirely while still avoiding
-     * N+1 when the response DTO calls task.getProject().
-     */
-    @Query("""
+    @Query(value = """
         SELECT t FROM Task t
         LEFT JOIN FETCH t.project
-        WHERE t.owner.id = :ownerId
+        WHERE t.assignee.id = :assigneeId
+          AND t.project.team.id IN :teamIds
           AND t.dueDate < :now
           AND t.status NOT IN (
               com.taskmanager.core.enums.TaskStatus.COMPLETED,
               com.taskmanager.core.enums.TaskStatus.CANCELLED
           )
         ORDER BY t.dueDate ASC
+        """, countQuery = """
+        SELECT COUNT(t) FROM Task t
+        WHERE t.assignee.id = :assigneeId
+          AND t.project.team.id IN :teamIds
+          AND t.dueDate < :now
+          AND t.status NOT IN (
+              com.taskmanager.core.enums.TaskStatus.COMPLETED,
+              com.taskmanager.core.enums.TaskStatus.CANCELLED
+          )
         """)
-    Page<Task> findOverdueTasksForUser(@Param("ownerId") UUID ownerId,
-                                       @Param("now")     Instant now,
+    Page<Task> findOverdueTasksForUser(@Param("assigneeId") UUID assigneeId,
+                                       @Param("teamIds")    List<UUID> teamIds,
+                                       @Param("now")        Instant now,
                                        Pageable pageable);
 
-    @Query("""
+    @Query(value = """
         SELECT t FROM Task t
         LEFT JOIN FETCH t.project
-        WHERE t.owner.id  = :ownerId
+        WHERE t.assignee.id = :assigneeId
+          AND t.project.team.id IN :teamIds
           AND t.dueDate  >= :startOfDay
           AND t.dueDate  <  :endOfDay
           AND t.status NOT IN (
@@ -82,22 +72,98 @@ public interface TaskRepository extends JpaRepository<Task, UUID>,
               com.taskmanager.core.enums.TaskStatus.CANCELLED
           )
         ORDER BY t.priorityLevel DESC, t.dueDate ASC
+        """, countQuery = """
+        SELECT COUNT(t) FROM Task t
+        WHERE t.assignee.id = :assigneeId
+          AND t.project.team.id IN :teamIds
+          AND t.dueDate  >= :startOfDay
+          AND t.dueDate  <  :endOfDay
+          AND t.status NOT IN (
+              com.taskmanager.core.enums.TaskStatus.COMPLETED,
+              com.taskmanager.core.enums.TaskStatus.CANCELLED
+          )
         """)
-    Page<Task> findTodaysTasksForUser(@Param("ownerId")    UUID ownerId,
-                                      @Param("startOfDay") Instant startOfDay,
-                                      @Param("endOfDay")   Instant endOfDay,
+    Page<Task> findTodaysTasksForUser(@Param("assigneeId")  UUID assigneeId,
+                                      @Param("teamIds")     List<UUID> teamIds,
+                                      @Param("startOfDay")  Instant startOfDay,
+                                      @Param("endOfDay")    Instant endOfDay,
                                       Pageable pageable);
 
-    @EntityGraph(attributePaths = {"project"})
     @Query("""
         SELECT t FROM Task t
-        WHERE t.owner.id    = :ownerId
+        LEFT JOIN FETCH t.project
+        WHERE t.assignee.id = :userId
           AND t.status      = com.taskmanager.core.enums.TaskStatus.COMPLETED
           AND t.completedAt >= :since
         ORDER BY t.completedAt DESC
         """)
-    List<Task> findCompletedTasksForRLTraining(@Param("ownerId") UUID ownerId,
-                                               @Param("since")   Instant since);
+    List<Task> findCompletedTasksForRLTraining(@Param("userId")     UUID userId,
+                                               @Param("since")      Instant since);
+
+    @Query("""
+        SELECT COUNT(t) FROM Task t
+        WHERE t.assignee.id = :userId
+          AND t.project.team.id IN :teamIds
+          AND t.status IN :statuses
+        """)
+    long countTasksForUserInTeamsByStatus(@Param("userId") UUID userId, @Param("teamIds") List<UUID> teamIds, @Param("statuses") List<TaskStatus> statuses);
+
+    @Query("""
+        SELECT COUNT(t) FROM Task t
+        WHERE t.assignee.id = :userId
+          AND t.project.team.id IN :teamIds
+          AND t.dueDate < :now
+          AND t.status NOT IN :excludedStatuses
+        """)
+    long countOverdueTasksForUserInTeams(@Param("userId") UUID userId, @Param("teamIds") List<UUID> teamIds, @Param("now") Instant now, @Param("excludedStatuses") List<TaskStatus> excludedStatuses);
 
     long countByProjectIdAndStatusNotIn(UUID projectId, List<TaskStatus> excludedStatuses);
+
+    @org.springframework.data.jpa.repository.Modifying
+    @Query("DELETE FROM Task t WHERE t.project.id = :projectId")
+    void deleteByProjectId(@Param("projectId") UUID projectId);
+
+    @org.springframework.data.jpa.repository.Modifying
+    @Query("UPDATE Task t SET t.assignee = null WHERE t.assignee.id = :userId AND t.project.team.id = :teamId")
+    void unassignUserFromTeamTasks(@Param("userId") UUID userId, @Param("teamId") UUID teamId);
+
+    @org.springframework.data.jpa.repository.Modifying
+    @Query("UPDATE Task t SET t.status = com.taskmanager.core.enums.TaskStatus.CANCELLED WHERE t.recurrenceGroupId = :groupId AND t.status = com.taskmanager.core.enums.TaskStatus.PENDING AND t.id != :excludeId")
+    void cancelFutureOccurrences(@Param("groupId") UUID groupId, @Param("excludeId") UUID excludeId);
+
+    @Query("""
+        SELECT t FROM Task t
+        LEFT JOIN FETCH t.project
+        WHERE t.assignee.id = :userId
+          AND t.project.team.id = :teamId
+          AND t.status NOT IN (com.taskmanager.core.enums.TaskStatus.CANCELLED)
+          AND (
+            (t.scheduledTime IS NOT NULL AND t.scheduledTime >= :start AND t.scheduledTime < :end)
+            OR
+            (t.scheduledTime IS NULL AND t.dueDate IS NOT NULL AND t.dueDate >= :start AND t.dueDate < :end)
+          )
+        ORDER BY t.scheduledTime ASC, t.dueDate ASC
+        """)
+    List<Task> findCalendarTasksForUser(@Param("userId") UUID userId,
+                                        @Param("teamId") UUID teamId,
+                                        @Param("start") Instant start,
+                                        @Param("end") Instant end,
+                                        Pageable pageable);
+
+    @Query("""
+        SELECT t FROM Task t
+        LEFT JOIN FETCH t.project
+        WHERE t.project.team.id = :teamId
+          AND t.status NOT IN (com.taskmanager.core.enums.TaskStatus.CANCELLED)
+          AND (
+            (t.scheduledTime IS NOT NULL AND t.scheduledTime >= :start AND t.scheduledTime < :end)
+            OR
+            (t.scheduledTime IS NULL AND t.dueDate IS NOT NULL AND t.dueDate >= :start AND t.dueDate < :end)
+          )
+        ORDER BY t.scheduledTime ASC, t.dueDate ASC
+        """)
+    List<Task> findCalendarTasksForTeam(@Param("teamId") UUID teamId,
+                                        @Param("start") Instant start,
+                                        @Param("end") Instant end,
+                                        Pageable pageable);
 }

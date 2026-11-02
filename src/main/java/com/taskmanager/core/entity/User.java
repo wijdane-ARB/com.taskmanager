@@ -87,19 +87,7 @@ public class User {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
-    // Read-only view of projects this user created. Kept lazy and
-    // unmodified-by-app-code on purpose — Project rows are created and
-    // deleted directly via ProjectRepository/ProjectServiceImpl, not
-    // through this collection. CascadeType.ALL + orphanRemoval still
-    // gives us "deleting a user cascades to their created projects"
-    // at the JPA layer.
-    @OneToMany(
-            mappedBy = "createdBy",
-            cascade = CascadeType.ALL,
-            orphanRemoval = true,
-            fetch = FetchType.LAZY
-    )
-    private List<Project> projects = new ArrayList<>();
+
 
     // --- Constructors ---
 
@@ -114,6 +102,7 @@ public class User {
     // --- Getters & Setters ---
 
     public UUID getId() { return id; }
+    public void setId(UUID id) { this.id = id; }
 
     public String getDisplayName() { return displayName; }
     public void setDisplayName(String displayName) { this.displayName = displayName; }
@@ -132,6 +121,4 @@ public class User {
 
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
-
-    public List<Project> getProjects() { return projects; }
 }

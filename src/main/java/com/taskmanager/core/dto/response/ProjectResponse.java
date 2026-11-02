@@ -13,12 +13,13 @@ public record ProjectResponse(
         String color,
         ProjectStatus status,
         long activeTaskCount,
+        long memberCount,
         UUID teamId,
         UUID createdByUserId,
         Instant createdAt,
         Instant updatedAt
 ) {
-    public static ProjectResponse from(Project project, long activeTaskCount) {
+    public static ProjectResponse from(Project project, long activeTaskCount, long memberCount) {
         return new ProjectResponse(
                 project.getId(),
                 project.getName(),
@@ -26,6 +27,7 @@ public record ProjectResponse(
                 project.getColor(),
                 project.getStatus(),
                 activeTaskCount,
+                memberCount,
                 project.getTeam().getId(),
                 project.getCreatedBy().getId(),
                 project.getCreatedAt(),

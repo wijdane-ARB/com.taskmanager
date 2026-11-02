@@ -1,0 +1,49 @@
+name: Java CI with Maven
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: taskmanager_db
+          POSTGRES_USER: taskmanager_user
+          POSTGRES_PASSWORD: taskmanager_pass
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up JDK 21
+      uses: actions/setup-java@v3
+      with:
+        java-version: '21'
+        distribution: 'temurin'
+        cache: maven
+        
+    - name: Run Tests
+      run: mvn -B verify
+      env:
+        DB_URL: jdbc:postgresql://localhost:5433/taskmanager_db
+        DB_USERNAME: taskmanager_user
+        DB_PASSWORD: taskmanager_pass
+        JWT_SECRET: very-long-test-secret-key-at-least-32-chars-for-test
+        CODE_HMAC_SECRET: test-hmac-secret

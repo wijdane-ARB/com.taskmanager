@@ -25,9 +25,9 @@ services:
       - taskmanager_network
 
     environment:
-      POSTGRES_DB: taskmanager_db
-      POSTGRES_USER: taskmanager_user
-      POSTGRES_PASSWORD: taskmanager_pass
+      POSTGRES_DB: ${DB_NAME:-taskmanager_db}
+      POSTGRES_USER: ${DB_USERNAME:-taskmanager_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-taskmanager_pass}
       # Performance tuning for a local dev environment.
       # These are safe for development — do NOT carry these into production
       # without a proper DBA review against your actual hardware specs.
@@ -37,7 +37,7 @@ services:
       # Host:Container — exposes Postgres on localhost:5433 so your IDE's
       # database tool (IntelliJ, DBeaver) can connect directly without
       # going through pgAdmin.
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
 
     volumes:
       # Named volume for data persistence across container restarts.
@@ -50,7 +50,7 @@ services:
       # pg_isready exits 0 only when the server is fully accepting connections.
       # The Spring Boot service below depends_on this check before starting,
       # preventing the "connection refused" race condition on cold starts.
-      test: ["CMD-SHELL", "pg_isready -U taskmanager_user -d taskmanager_db"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-taskmanager_user} -d ${DB_NAME:-taskmanager_db}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -64,7 +64,7 @@ services:
     networks:
       - taskmanager_network
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
 
   # ── pgAdmin 4 ──────────────────────────────────────────────────────────────
   pgadmin:
@@ -78,22 +78,18 @@ services:
         condition: service_healthy
 
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@taskmanager.dev
-      PGADMIN_DEFAULT_PASSWORD: admin
-      PGADMIN_CONFIG_SERVER_MODE: "False"   # Single-user desktop mode — no login screen
-      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@taskmanager.dev}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: "True"   # Require login auth
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "True"
 
     ports:
-      - "5050:80"
+      - "127.0.0.1:5050:80"
 
     volumes:
       # Persists pgAdmin's saved server connections and preferences so you
       # don't have to re-register the Postgres server after every restart.
       - pgadmin_data:/var/lib/pgadmin
-      # Pre-loads a server definition so the Postgres instance appears
-      # automatically in pgAdmin without manual registration.
-      # The file is defined below in the comments — create it if you want auto-registration.
-      - ./docker/pgadmin/servers.json:/pgadmin4/servers.json:ro
 
     healthcheck:
       test: ["CMD", "wget", "-O", "-", "http://localhost:80/misc/ping"]

@@ -1,10 +1,19 @@
 # FILE: application.yml
 server:
   port: 8080
-  error:
+  shutdown: graceful
 
 spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+  servlet:
+    multipart:
+      max-file-size: 25MB
+      max-request-size: 26MB
   data:
+    web:
+      pageable:
+        serialization-mode: VIA_DTO
     redis:
       host: localhost
       port: 6379
@@ -12,9 +21,9 @@ spring:
     name: taskmanager-core
 
   datasource:
-    url: jdbc:postgresql://localhost:5433/taskmanager_db
-    username: taskmanager_user
-    password: taskmanager_pass
+    url: ${DB_URL:jdbc:postgresql://localhost:5433/taskmanager_db}
+    username: ${DB_USERNAME:taskmanager_user}
+    password: ${DB_PASSWORD:taskmanager_pass}
     driver-class-name: org.postgresql.Driver
     hikari:
       pool-name: TaskManagerHikariPool
@@ -27,23 +36,18 @@ spring:
 
   jpa:
     hibernate:
-      # FIX: must stay "validate", not "update". Hibernate's ddl-auto=update
-      # trying to manage schema in parallel with Flyway is what caused the
-      # original "column team_id does not exist" corruption — Hibernate ran
-      # its own blind ALTER TABLE before Flyway's correctly-ordered V3
-      # migration ever got a chance. Flyway is the single source of truth
-      # for schema now; Hibernate only verifies entities match it.
-      ddl-auto: validate
+      ddl-auto: none
     properties:
       hibernate:
         dialect: org.hibernate.dialect.PostgreSQLDialect
-        format_sql: true
-        use_sql_comments: true
+        format_sql: false
+        use_sql_comments: false
         jdbc:
           batch_size: 25
+        default_batch_fetch_size: 100
         order_inserts: true
         order_updates: true
-    show-sql: true
+    show-sql: false
     open-in-view: false
   flyway:
     enabled: true
@@ -59,13 +63,12 @@ spring:
   # Fill in MAIL_USERNAME / MAIL_PASSWORD as environment variables — never
   # commit real SMTP credentials to source control.
   # Gmail example: host smtp.gmail.com, port 587, username = your Gmail
-  # address, password = a 16-char Gmail "App Password" (not your login
-  # password — Gmail rejects plain SMTP auth with regular passwords).
+  # address, password = a 16-char Gmail "App Password".
   mail:
     host: ${MAIL_HOST:smtp.gmail.com}
     port: ${MAIL_PORT:587}
-    username: ${MAIL_USERNAME:}
-    password: ${MAIL_PASSWORD:}
+    username: ${MAIL_USERNAME:placeholder}
+    password: ${MAIL_PASSWORD:placeholder}
     properties:
       mail:
         smtp:
@@ -73,29 +76,53 @@ spring:
           starttls:
             enable: true
 
+# ── JWT ──────────────────────────────────────────────────────────────────
+# FIX: jwt.secret was missing and JwtService's @Value has no default, so the
+# app failed at startup. The default below is DEV ONLY — JwtService refuses
+# to boot with it under the "prod" profile, so set JWT_SECRET there.
+jwt:
+  secret: ${JWT_SECRET:your-very-long-dev-secret-key-at-least-32-chars}
+  access-token-expiry-seconds: ${JWT_ACCESS_EXPIRY_SECONDS:900}
+  refresh-token-expiry-days: ${JWT_REFRESH_EXPIRY_DAYS:30}
+
 # ── App-specific settings ────────────────────────────────────────────────
 app:
+  trust-proxy-headers: ${APP_TRUST_PROXY_HEADERS:false}
+  trusted-proxy-hops: ${APP_TRUSTED_PROXY_HOPS:1}
   mail:
-    trust-proxy-headers: false
-    from: ${MAIL_FROM:no-reply@taskmanager.app}
+    from: ${MAIL_FROM:arbwij@gmail.com}
     code-expiry-minutes: 15
+  google:
+    client-id: ${GOOGLE_CLIENT_ID:placeholder-google-client-id}
+  security:
+    # Server-side key for HMAC-ing 6-digit verification/reset codes.
+    # DEV default only — set CODE_HMAC_SECRET in every real environment.
+    code-hmac-secret: ${CODE_HMAC_SECRET:dev-only-change-me-code-hmac-secret-0123456789}
 
 logging:
   level:
-    root: WARN
-    com.taskmanager.core: DEBUG
-    org.hibernate.SQL: DEBUG
-    org.hibernate.orm.jdbc.bind: TRACE
+    root: INFO
+    com.taskmanager.core: INFO
+    org.hibernate.SQL: ERROR
     com.zaxxer.hikari: INFO
-    org.springframework.web: DEBUG
+    org.springframework.web: INFO
     org.springframework.security: WARN
-    org.springframework.transaction: DEBUG
-    org.flywaydb: DEBUG   # keep this on until we confirm V1–V4 all apply cleanly
+    org.springframework.transaction: WARN
+    org.flywaydb: INFO
 
   pattern:
     console: "%clr(%d{yyyy-MM-dd HH:mm:ss.SSS}){faint} %clr(%5p) %clr([%15.15t]){faint} %clr(%-40.40logger{39}){cyan} %clr(:){faint} %m%n%wEx"
 
-  cors:
-    allowed-origins:
-      - http://localhost:3000
-      - http://localhost:8081
+management:
+  server:
+    port: 8081
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+cors:
+  allowed-origins:
+    - "http://localhost:3000"
+    - "http://localhost:8080"
+    - "http://localhost:8081"

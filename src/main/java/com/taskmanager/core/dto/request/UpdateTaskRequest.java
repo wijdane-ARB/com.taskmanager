@@ -6,12 +6,15 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Size;
 
 import java.time.Instant;
+import java.util.UUID;
 
 /**
  * All fields are Optional (nullable) — PATCH semantics.
  * The service layer only applies fields that are non-null.
- * This avoids requiring a full object representation for simple updates
- * like marking a task complete or changing a due date.
+ *
+ * FIX: null assigneeId means "no change", so there was no way to unassign a
+ * task. Send clearAssignee=true to set the assignee to null. If both are
+ * sent, clearAssignee wins.
  */
 public record UpdateTaskRequest(
 
@@ -21,15 +24,18 @@ public record UpdateTaskRequest(
         @Size(max = 2000)
         String description,
 
+        UUID assigneeId,
+
+        Boolean clearAssignee,
+
         Instant dueDate,
 
         Instant scheduledTime,
 
         PriorityLevel priorityLevel,
 
-        // Status transitions are driven through this field.
-        // The service layer validates that the transition is legal
-        // (e.g., you can't go from CANCELLED to COMPLETED).
+        // Status transitions are validated in the service layer
+        // (see TaskServiceImpl.applyStatusTransition).
         TaskStatus status,
 
         @Min(1)
@@ -38,6 +44,9 @@ public record UpdateTaskRequest(
         Boolean isRecurring,
 
         @Size(max = 100)
-        String recurrenceRule
+        String recurrenceRule,
+
+        @jakarta.validation.constraints.NotNull(message = "Version is required for optimistic locking")
+        Long version
 
 ) {}

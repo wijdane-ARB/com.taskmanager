@@ -25,7 +25,10 @@ import java.util.UUID;
  */
 public record TaskFilterRequest(
 
-        // Filter by project — null means across all projects
+        // Filter by team — if null, searches across all the user's teams
+        UUID teamId,
+
+        // Filter by project — null means across all projects in the team(s)
         UUID projectId,
 
         // Filter by status — null means all non-CANCELLED statuses

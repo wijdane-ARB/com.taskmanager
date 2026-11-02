@@ -11,11 +11,12 @@ import com.taskmanager.core.entity.TeamMember;
 import com.taskmanager.core.entity.User;
 import com.taskmanager.core.enums.InviteStatus;
 import com.taskmanager.core.exception.ResourceNotFoundException;
-import com.taskmanager.core.exception.UnauthorizedAccessException;
+import com.taskmanager.core.exception.ForbiddenException;
 import com.taskmanager.core.repository.TeamInviteRepository;
 import com.taskmanager.core.repository.TeamMemberRepository;
 import com.taskmanager.core.repository.TeamRepository;
 import com.taskmanager.core.repository.UserRepository;
+import com.taskmanager.core.service.EmailService;
 import com.taskmanager.core.service.TeamService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,6 +24,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -48,17 +50,29 @@ public class TeamServiceImpl implements TeamService {
     private final TeamMemberRepository teamMemberRepository;
     private final TeamInviteRepository teamInviteRepository;
     private final UserRepository userRepository;
+    private final com.taskmanager.core.repository.TaskRepository taskRepository;
+    private final com.taskmanager.core.repository.ProjectRepository projectRepository;
+    private final com.taskmanager.core.service.NotificationService notificationService;
+    private final org.springframework.context.ApplicationEventPublisher eventPublisher;
 
     public TeamServiceImpl(
             TeamRepository teamRepository,
             TeamMemberRepository teamMemberRepository,
             TeamInviteRepository teamInviteRepository,
-            UserRepository userRepository
+            UserRepository userRepository,
+            com.taskmanager.core.repository.TaskRepository taskRepository,
+            com.taskmanager.core.repository.ProjectRepository projectRepository,
+            com.taskmanager.core.service.NotificationService notificationService,
+            org.springframework.context.ApplicationEventPublisher eventPublisher
     ) {
         this.teamRepository = teamRepository;
         this.teamMemberRepository = teamMemberRepository;
         this.teamInviteRepository = teamInviteRepository;
         this.userRepository = userRepository;
+        this.taskRepository = taskRepository;
+        this.projectRepository = projectRepository;
+        this.notificationService = notificationService;
+        this.eventPublisher = eventPublisher;
     }
 
     // ── Create ────────────────────────────────────────────────────────────
@@ -76,6 +90,17 @@ public class TeamServiceImpl implements TeamService {
         // needed anywhere downstream.
         teamMemberRepository.save(new TeamMember(saved, owner));
 
+        // Create initial "Inbox" project for the new team
+        com.taskmanager.core.entity.Project inbox = new com.taskmanager.core.entity.Project(
+            "Inbox", 
+            "Capture tasks that don't belong to a specific project yet.", 
+            saved, 
+            owner
+        );
+        inbox.setColor("#6366F1");
+        inbox.setStatus(com.taskmanager.core.enums.ProjectStatus.ACTIVE);
+        projectRepository.save(inbox);
+
         log.info("Team {} created by user {}", saved.getId(), ownerId);
         return TeamResponse.from(saved, 1L);
     }
@@ -87,8 +112,10 @@ public class TeamServiceImpl implements TeamService {
         List<UUID> teamIds = teamMemberRepository.findTeamIdsForUser(userId);
         if (teamIds.isEmpty()) return List.of();
 
+        Map<UUID, Long> memberCountMap = teamMemberRepository.countMembersForTeams(teamIds);
+
         return teamRepository.findAllById(teamIds).stream()
-                .map(t -> TeamResponse.from(t, teamMemberRepository.findByTeamIdOrderByJoinedAtAsc(t.getId()).size()))
+                .map(t -> TeamResponse.from(t, memberCountMap.getOrDefault(t.getId(), 0L)))
                 .toList();
     }
 
@@ -114,16 +141,80 @@ public class TeamServiceImpl implements TeamService {
                 .toList();
     }
 
+    @Override
+    public Map<String, Object> getTeamSummary(UUID userId) {
+        List<UUID> teamIds = teamMemberRepository.findTeamIdsForUser(userId);
+                
+        if (teamIds.isEmpty()) {
+            return Map.of("activeTasks", 0, "completedTasks", 0, "overdueTasks", 0, "completionRate", 0);
+        }
+        
+        long activeTasks = taskRepository.countTasksForUserInTeamsByStatus(userId, teamIds, List.of(
+                com.taskmanager.core.enums.TaskStatus.PENDING,
+                com.taskmanager.core.enums.TaskStatus.IN_PROGRESS,
+                com.taskmanager.core.enums.TaskStatus.REOPENED
+        ));
+        long completedTasks = taskRepository.countTasksForUserInTeamsByStatus(userId, teamIds, List.of(com.taskmanager.core.enums.TaskStatus.COMPLETED));
+        long overdueTasks = taskRepository.countOverdueTasksForUserInTeams(userId, teamIds, java.time.Instant.now(), List.of(com.taskmanager.core.enums.TaskStatus.COMPLETED, com.taskmanager.core.enums.TaskStatus.CANCELLED));
+        
+        // Total tasks is active + completed (overdue is a subset of active tasks)
+        long totalTasks = activeTasks + completedTasks;
+        int completionRate = totalTasks > 0 ? (int) Math.round((double) completedTasks / totalTasks * 100) : 0;
+        
+        Map<String, Object> summary = new java.util.HashMap<>();
+        summary.put("activeTasks", activeTasks);
+        summary.put("completedTasks", completedTasks);
+        summary.put("overdueTasks", overdueTasks);
+        summary.put("completionRate", completionRate);
+        
+        Map<String, Integer> unreadCounts = new java.util.HashMap<>();
+        for (UUID tId : teamIds) {
+            unreadCounts.put(tId.toString(), 0);
+        }
+        summary.put("unreadCounts", unreadCounts);
+        
+        return summary;
+    }
+
+    @Override
+    @Transactional
+    public TeamResponse updateTeam(UUID callerId, UUID teamId, String newName) {
+        Team team = findTeamWithAccessOrThrow(teamId, callerId);
+        if (!team.getOwner().getId().equals(callerId)) {
+            throw new ForbiddenException("Only the team owner can rename the team.");
+        }
+        team.setName(newName);
+        teamRepository.save(team);
+        long memberCount = teamMemberRepository.countByTeamId(teamId);
+        return TeamResponse.from(team, memberCount);
+    }
+
+    @Override
+    @Transactional
+    public void deleteTeam(UUID callerId, UUID teamId) {
+        Team team = findTeamWithAccessOrThrow(teamId, callerId);
+        if (!team.getOwner().getId().equals(callerId)) {
+            throw new ForbiddenException("Only the team owner can delete the team.");
+        }
+        teamRepository.delete(team);
+        log.info("Team {} deleted by owner {}", teamId, callerId);
+    }
+
     // ── Invites ───────────────────────────────────────────────────────────
 
     @Override
     @Transactional
     public TeamInviteResponse inviteMember(UUID inviterId, UUID teamId, TeamInviteRequest request) {
+        String email = request.email().trim().toLowerCase();
         Team team = findTeamWithAccessOrThrow(teamId, inviterId);
+        
+        // Strip carriage returns/newlines to prevent SMTP header injection
+        String cleanTeamName = team.getName().replaceAll("[\\r\\n]", "");
+        
         User inviter = findUserOrThrow(inviterId);
 
         // No-op guard: already a member?
-        userRepository.findByEmail(request.email()).ifPresent(existing -> {
+        userRepository.findByEmail(email).ifPresent(existing -> {
             if (teamMemberRepository.existsByTeamIdAndUserId(teamId, existing.getId())) {
                 throw new IllegalStateException("This user is already a member of the team.");
             }
@@ -131,17 +222,29 @@ public class TeamServiceImpl implements TeamService {
 
         // No-op guard: pending invite already outstanding for this email?
         teamInviteRepository
-                .findByTeamIdAndInvitedEmailIgnoreCaseAndStatus(teamId, request.email(), InviteStatus.PENDING)
+                .findByTeamIdAndInvitedEmailIgnoreCaseAndStatus(teamId, email, InviteStatus.PENDING)
                 .ifPresent(existing -> {
                     throw new IllegalStateException("An invite is already pending for this email.");
                 });
 
-        TeamInvite invite = new TeamInvite(team, request.email(), inviter);
+        TeamInvite invite = new TeamInvite(team, email, inviter);
         TeamInvite saved = teamInviteRepository.saveAndFlush(invite);
 
-        log.info("Team {} invite sent to {} by user {}", teamId, request.email(), inviterId);
-        // NOTE: no email is actually sent yet — wire into EmailService in
-        // a follow-up pass (sendTeamInvite(toEmail, teamName, inviterName)).
+        log.info("Team {} invite sent to {} by user {}", teamId, email, inviterId);
+        
+        eventPublisher.publishEvent(new com.taskmanager.core.event.SendEmailEvent(
+                email, inviter.getDisplayName(), cleanTeamName, com.taskmanager.core.event.SendEmailEvent.EmailType.TEAM_INVITE));
+
+        // Create in-app notification if the user exists
+        userRepository.findByEmail(email).ifPresent(invitee -> {
+            notificationService.createNotification(
+                invitee,
+                "New Team Invite",
+                inviter.getDisplayName() + " invited you to join " + cleanTeamName,
+                "TEAM_INVITE"
+            );
+        });
+
         return TeamInviteResponse.from(saved);
     }
 
@@ -177,6 +280,15 @@ public class TeamServiceImpl implements TeamService {
         teamInviteRepository.save(invite);
 
         log.info("User {} accepted invite to team {}", userId, team.getId());
+
+        // Notify team owner
+        notificationService.createNotification(
+            team.getOwner(),
+            "Invite Accepted",
+            user.getDisplayName() + " has joined your team " + team.getName(),
+            "TEAM_JOINED"
+        );
+
         long memberCount = teamMemberRepository.findByTeamIdOrderByJoinedAtAsc(team.getId()).size();
         return TeamResponse.from(team, memberCount);
     }
@@ -206,14 +318,21 @@ public class TeamServiceImpl implements TeamService {
         Team team = findTeamWithAccessOrThrow(teamId, callerId); // 404 if not a member at all
 
         if (!team.getOwner().getId().equals(callerId)) {
-            throw new UnauthorizedAccessException("Only the team owner can remove members.");
+            throw new ForbiddenException("Only the team owner can remove members.");
         }
         if (team.getOwner().getId().equals(memberUserId)) {
             throw new IllegalStateException("The team owner cannot be removed. Delete the team instead.");
         }
 
         teamMemberRepository.deleteByTeamIdAndUserId(teamId, memberUserId);
+        taskRepository.unassignUserFromTeamTasks(memberUserId, teamId);
         log.info("User {} removed from team {} by owner {}", memberUserId, teamId, callerId);
+        
+        // ACCEPTED GAP: 
+        // We do not actively kill the user's STOMP session here. The removed user
+        // will still receive live websocket messages on this team's topic until they 
+        // organically disconnect (e.g. close the app). We accept this minor gap to 
+        // avoid dragging spring-websocket registry dependencies into the core service layer.
     }
 
     // ── Access check ─────────────────────────────────────────────────────
@@ -224,12 +343,6 @@ public class TeamServiceImpl implements TeamService {
     }
 
     // ── Private helpers ──────────────────────────────────────────────────
-
-    private void requireAccess(UUID teamId, UUID callerId) {
-        if (!hasTeamAccess(teamId, callerId)) {
-            throw new UnauthorizedAccessException("You are not a member of this team.");
-        }
-    }
 
     private void validateInviteBelongsToCaller(TeamInvite invite, User caller) {
         if (!invite.getInvitedEmail().equalsIgnoreCase(caller.getEmail())) {

@@ -90,10 +90,10 @@ public class ProjectController {
     }
 
     @DeleteMapping("/{projectId}")
-    public ResponseEntity<Void> deleteProject(
+    public ResponseEntity<ApiResponse<Void>> deleteProject(
             @AuthenticationPrincipal UUID currentUserId, @PathVariable UUID projectId
     ) {
         projectService.deleteProject(currentUserId, projectId);
-        return ResponseEntity.noContent().build();
+        return ResponseEntity.ok(ApiResponse.ok("Project deleted", null));
     }
 }

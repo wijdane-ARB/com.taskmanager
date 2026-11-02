@@ -13,7 +13,6 @@ import org.springframework.messaging.support.ChannelInterceptor;
 import org.springframework.messaging.support.MessageHeaderAccessor;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 
 import java.security.Principal;
@@ -61,7 +60,7 @@ public class JwtChannelInterceptor implements ChannelInterceptor {
     private static final Logger log = LoggerFactory.getLogger(JwtChannelInterceptor.class);
 
     private static final Pattern TEAM_TOPIC_PATTERN =
-            Pattern.compile("^/topic/teams/([0-9a-fA-F-]{36})$");
+            Pattern.compile("^/topic/teams/([0-9a-fA-F-]{36})/(chat|tasks|typing)$");
 
     private final JwtService jwtService;
     private final TeamService teamService;
@@ -82,11 +81,25 @@ public class JwtChannelInterceptor implements ChannelInterceptor {
 
         if (StompCommand.CONNECT.equals(accessor.getCommand())) {
             authenticateConnect(accessor);
+            if (accessor.getUser() == null) {
+                log.warn("Anonymous CONNECT attempt — denying");
+                throw new IllegalArgumentException("Unauthorized"); // Throws ERROR frame and drops connection
+            }
             return message;
         }
 
         if (StompCommand.SUBSCRIBE.equals(accessor.getCommand())) {
             return isSubscribeAuthorized(accessor) ? message : null;
+        }
+
+        if (StompCommand.SEND.equals(accessor.getCommand())) {
+            String destination = accessor.getDestination();
+            // Reject any direct client messages to the broker, forcing them to go through /app
+            if (destination != null && !destination.startsWith("/app/")) {
+                log.warn("Client attempted to SEND directly to broker destination '{}' — denying", destination);
+                return null;
+            }
+            return message;
         }
 
         return message;
@@ -111,8 +124,26 @@ public class JwtChannelInterceptor implements ChannelInterceptor {
                 new UsernamePasswordAuthenticationToken(
                         userId, null, List.of(new SimpleGrantedAuthority("ROLE_USER")));
 
+        // Deliberately NOT calling SecurityContextHolder.getContext()
+        // .setAuthentication(auth) here. The STOMP inbound channel runs on
+        // a shared, pooled set of threads across every active session —
+        // unlike a normal HTTP request, there's no per-request context
+        // teardown, so anything written to the (thread-local) security
+        // context here can leak into the next unrelated STOMP frame
+        // processed on the same pooled thread, potentially attributing it
+        // to the wrong user.
+        //
+        // accessor.setUser(auth) below is sufficient and is the only thing
+        // anything in this codebase actually reads: isSubscribeAuthorized()
+        // uses accessor.getUser(), and every @MessageMapping handler in
+        // ChatController resolves the caller via the Principal parameter
+        // Spring derives from that same accessor field — never via
+        // SecurityContextHolder. If a future STOMP handler is added that
+        // reaches for SecurityContextHolder out of habit (very natural,
+        // since every REST controller in this codebase does exactly that
+        // via @AuthenticationPrincipal), it should read from the message's
+        // Principal/accessor instead, not this thread-local.
         accessor.setUser(auth);
-        SecurityContextHolder.getContext().setAuthentication(auth);
     }
 
     /**
@@ -127,37 +158,40 @@ public class JwtChannelInterceptor implements ChannelInterceptor {
             return false;
         }
 
+        // 1. Allow personal notification queue and error queue
+        if (destination.startsWith("/user/queue/notifications") || destination.startsWith("/user/queue/errors")) {
+            return true;
+        }
+
+        // 2. Allow team topics if member
         Matcher matcher = TEAM_TOPIC_PATTERN.matcher(destination);
-        if (!matcher.matches()) {
-            // Default-deny: anything not explicitly recognized is rejected,
-            // so a new topic family can't accidentally ship unguarded.
-            log.warn("SUBSCRIBE to unrecognized/unguarded destination '{}' — denying", destination);
-            return false;
+        if (matcher.matches()) {
+            Principal principal = accessor.getUser();
+            if (principal == null) {
+                log.warn("Unauthenticated SUBSCRIBE attempt to '{}' — denying", destination);
+                return false;
+            }
+
+            UUID teamId;
+            UUID userId;
+            try {
+                teamId = UUID.fromString(matcher.group(1));
+                userId = UUID.fromString(principal.getName());
+            } catch (IllegalArgumentException e) {
+                log.warn("SUBSCRIBE to '{}' had an unparseable team or user id — denying", destination);
+                return false;
+            }
+
+            if (!teamService.hasTeamAccess(teamId, userId)) {
+                log.warn("User {} attempted to subscribe to team {} without membership — denying", userId, teamId);
+                return false;
+            }
+
+            return true;
         }
 
-        Principal principal = accessor.getUser();
-        if (principal == null) {
-            log.warn("Unauthenticated SUBSCRIBE attempt to '{}' — denying", destination);
-            return false;
-        }
-
-        UUID teamId;
-        UUID userId;
-        try {
-            teamId = UUID.fromString(matcher.group(1));
-            userId = UUID.fromString(principal.getName());
-        } catch (IllegalArgumentException e) {
-            // Regex only constrains character set/length, not UUID grouping —
-            // a malformed-but-matching destination or principal name lands here.
-            log.warn("SUBSCRIBE to '{}' had an unparseable team or user id — denying", destination);
-            return false;
-        }
-
-        if (!teamService.hasTeamAccess(teamId, userId)) {
-            log.warn("User {} attempted to subscribe to team {} without membership — denying", userId, teamId);
-            return false;
-        }
-
-        return true;
+        // Default-deny: anything not explicitly recognized is rejected
+        log.warn("SUBSCRIBE to unrecognized/unguarded destination '{}' — denying", destination);
+        return false;
     }
 }

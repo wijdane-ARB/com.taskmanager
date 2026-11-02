@@ -29,7 +29,12 @@ public class TaskSpecification {
                 root.fetch("project", jakarta.persistence.criteria.JoinType.LEFT);
             }
 
+            if (filter.teamId() != null) {
+                predicates.add(cb.equal(root.get("project").get("team").get("id"), filter.teamId()));
+            }
+            // SECURITY FIX: ALWAYS constrain by caller's teams
             predicates.add(root.get("project").get("team").get("id").in(callerTeamIds));
+
             predicates.add(cb.notEqual(root.get("status"), TaskStatus.CANCELLED));
 
             if (filter.projectId() != null) {

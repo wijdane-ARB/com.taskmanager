@@ -24,9 +24,15 @@ public interface AuthService {
      */
     AuthResponse login(LoginRequest request, String deviceInfo);
 
+    /**
+     * Authenticates a user via Google ID Token. If the user doesn't exist,
+     * a new verified account is created with a random password.
+     */
+    AuthResponse loginWithGoogle(GoogleLoginRequest request, String deviceInfo);
+
     AuthResponse refresh(RefreshRequest request, String deviceInfo);
 
-    void logout(UUID userId);
+    void logout(String refreshToken);
 
     /**
      * Confirms the 6-digit code sent on registration, marks the account

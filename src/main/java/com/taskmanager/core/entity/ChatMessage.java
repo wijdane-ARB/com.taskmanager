@@ -34,21 +34,26 @@ public class ChatMessage {
     @Column(name = "content", nullable = false, length = 2000)
     private String content;
 
+    @Column(name = "client_id")
+    private UUID clientId;
+
     @CreationTimestamp
     @Column(name = "timestamp", nullable = false, updatable = false)
     private Instant timestamp;
 
     protected ChatMessage() {}
 
-    public ChatMessage(Team team, User sender, String content) {
+    public ChatMessage(Team team, User sender, String content, UUID clientId) {
         this.team = team;
         this.sender = sender;
         this.content = content;
+        this.clientId = clientId;
     }
 
     public UUID getId() { return id; }
     public Team getTeam() { return team; }
     public User getSender() { return sender; }
     public String getContent() { return content; }
+    public UUID getClientId() { return clientId; }
     public Instant getTimestamp() { return timestamp; }
 }

@@ -38,8 +38,14 @@ public class JwtService {
 
     public JwtService(
             @Value("${jwt.secret}") String secret,
-            @Value("${jwt.access-token-expiry-seconds:900}") long accessTokenExpirySeconds
+            @Value("${jwt.access-token-expiry-seconds:900}") long accessTokenExpirySeconds,
+            org.springframework.core.env.Environment env
     ) {
+        if (java.util.Arrays.asList(env.getActiveProfiles()).contains("prod") &&
+            secret.equals("your-very-long-dev-secret-key-at-least-32-chars")) {
+            throw new IllegalStateException("JWT Secret must be securely configured in production profile! Overwrite jwt.secret.");
+        }
+
         // Keys.hmacShaKeyFor requires at least 32 bytes for HS256
         this.signingKey = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
         this.accessTokenExpirySeconds = accessTokenExpirySeconds;

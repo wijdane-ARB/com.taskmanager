@@ -6,9 +6,10 @@ import java.util.UUID;
 
 public record ChatMessageResponse(
         UUID id,
-        UUID projectId,
+        UUID teamId,
         UUID senderId,
         String senderName,
         String content,
-        Instant timestamp
+        Instant timestamp,
+        UUID clientId
 ) {}

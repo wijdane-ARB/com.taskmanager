@@ -90,21 +90,40 @@ public class TaskController {
         return ResponseEntity.ok(ApiResponse.ok(task));
     }
 
+    /** GET /api/v1/tasks/{taskId}/activities */
+    @GetMapping("/{taskId}/activities")
+    public ResponseEntity<ApiResponse<java.util.List<com.taskmanager.core.dto.response.TaskActivityResponse>>> getActivities(
+            @AuthenticationPrincipal UUID currentUserId,
+            @PathVariable UUID taskId
+    ) {
+        return ResponseEntity.ok(ApiResponse.ok(taskService.getTaskActivities(currentUserId, taskId)));
+    }
+
+    /** GET /api/v1/tasks/{taskId}/comments */
+    @GetMapping("/{taskId}/comments")
+    public ResponseEntity<ApiResponse<java.util.List<com.taskmanager.core.dto.response.TaskCommentResponse>>> getComments(
+            @AuthenticationPrincipal UUID currentUserId,
+            @PathVariable UUID taskId
+    ) {
+        return ResponseEntity.ok(ApiResponse.ok(taskService.getTaskComments(currentUserId, taskId)));
+    }
+
     /**
-     * GET /api/v1/tasks/project/{projectId}?page=0&size=20&sort=dueDate,asc
+     * GET /api/v1/tasks/project/{projectId}?teamId={teamId}&page=0&size=20&sort=dueDate,asc
      */
     @GetMapping("/project/{projectId}")
     public ResponseEntity<ApiResponse<Page<TaskResponse>>> getTasksByProject(
             @AuthenticationPrincipal UUID currentUserId,
             @PathVariable UUID projectId,
+            @RequestParam UUID teamId,
             @PageableDefault(size = 20) Pageable pageable
     ) {
-        Page<TaskResponse> tasks = taskService.getTasksByProject(currentUserId, projectId, pageable);
+        Page<TaskResponse> tasks = taskService.getTasksByProject(currentUserId, projectId, teamId, pageable);
         return ResponseEntity.ok(ApiResponse.ok(tasks));
     }
 
     /**
-     * GET /api/v1/tasks/today?page=0&size=20
+     * GET /api/v1/tasks/today?teamId={teamId}&page=0&size=20
      *
      * Was List<TaskResponse> — changed to Page<TaskResponse>.
      * A user with many projects can have dozens of tasks due today.
@@ -117,15 +136,16 @@ public class TaskController {
     @GetMapping("/today")
     public ResponseEntity<ApiResponse<Page<TaskResponse>>> getTodaysTasks(
             @AuthenticationPrincipal UUID currentUserId,
+            @RequestParam UUID teamId,
             @RequestHeader(value = "X-Timezone", required = false) String timeZoneId,
             @PageableDefault(size = 20) Pageable pageable
     ) {
-        Page<TaskResponse> tasks = taskService.getTodaysTasks(currentUserId, timeZoneId, pageable);
+        Page<TaskResponse> tasks = taskService.getTodaysTasks(currentUserId, teamId, timeZoneId, pageable);
         return ResponseEntity.ok(ApiResponse.ok(tasks));
     }
 
     /**
-     * GET /api/v1/tasks/overdue?page=0&size=20
+     * GET /api/v1/tasks/overdue?teamId={teamId}&page=0&size=20
      *
      * Was List<TaskResponse> — changed to Page<TaskResponse> for the same
      * reason as /today. Overdue lists in particular can be arbitrarily long
@@ -134,9 +154,10 @@ public class TaskController {
     @GetMapping("/overdue")
     public ResponseEntity<ApiResponse<Page<TaskResponse>>> getOverdueTasks(
             @AuthenticationPrincipal UUID currentUserId,
+            @RequestParam UUID teamId,
             @PageableDefault(size = 20) Pageable pageable
     ) {
-        Page<TaskResponse> tasks = taskService.getOverdueTasks(currentUserId, pageable);
+        Page<TaskResponse> tasks = taskService.getOverdueTasks(currentUserId, teamId, pageable);
         return ResponseEntity.ok(ApiResponse.ok(tasks));
     }
 
@@ -191,5 +212,16 @@ public class TaskController {
     ) {
         TaskResponse task = taskService.deleteTask(currentUserId, taskId);
         return ResponseEntity.ok(ApiResponse.ok("Task deleted", task));
+    }
+
+    /** POST /api/v1/tasks/{taskId}/attachments */
+    @PostMapping(value = "/{taskId}/attachments", consumes = org.springframework.http.MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<ApiResponse<String>> uploadAttachment(
+            @AuthenticationPrincipal UUID currentUserId,
+            @PathVariable UUID taskId,
+            @RequestParam("file") org.springframework.web.multipart.MultipartFile file
+    ) {
+        String fileUrl = taskService.addAttachment(currentUserId, taskId, file);
+        return ResponseEntity.ok(ApiResponse.ok("Attachment uploaded successfully", fileUrl));
     }
 }

@@ -27,7 +27,7 @@ public class TokenCleanupScheduler {
         this.verificationCodeRepository = verificationCodeRepository;
     }
 
-    @Scheduled(cron = "0 0 3 * * *") // 3:00 AM UTC every day
+    @Scheduled(cron = "0 0 3 * * *", zone = "UTC") // 3:00 AM UTC every day
     @Transactional
     public void purgeExpiredTokens() {
         log.info("Starting expired refresh token cleanup...");

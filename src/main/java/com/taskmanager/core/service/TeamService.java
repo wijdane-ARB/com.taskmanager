@@ -17,7 +17,13 @@ public interface TeamService {
 
     TeamResponse getTeamById(UUID userId, UUID teamId);
 
+    TeamResponse updateTeam(UUID callerId, UUID teamId, String newName);
+
+    void deleteTeam(UUID callerId, UUID teamId);
+
     List<TeamMemberResponse> getMembers(UUID userId, UUID teamId);
+
+    java.util.Map<String, Object> getTeamSummary(UUID userId);
 
     TeamInviteResponse inviteMember(UUID inviterId, UUID teamId, TeamInviteRequest request);
 

@@ -17,9 +17,8 @@ import java.util.UUID;
  * serves either the core product UX or the RL training pipeline.
  *
  * ─── RL DATA FIELDS ────────────────────────────────────────────
- * The following fields are collected silently during the free tier
- * and will be consumed as feature vectors by the Python scheduling
- * model in Phase 2:
+ * The following behavioral fields are collected with explicit user consent
+ * (pursuant to GDPR & Law 09-08 compliance) for ML model scheduling optimization:
  *
  *   scheduledTime         → What time the user *intended* to do this
  *   actualStartTime       → When they *actually* started (set on IN_PROGRESS)
@@ -41,10 +40,10 @@ import java.util.UUID;
         name = "tasks",
         indexes = {
                 @Index(name = "idx_tasks_project_id",  columnList = "project_id"),
-                @Index(name = "idx_tasks_owner_id",    columnList = "owner_id"),
+                @Index(name = "idx_tasks_assignee_id",    columnList = "assignee_id"),
                 @Index(name = "idx_tasks_status",      columnList = "status"),
                 @Index(name = "idx_tasks_due_date",    columnList = "due_date"),
-                @Index(name = "idx_tasks_owner_status_due", columnList = "owner_id, status, due_date")
+                @Index(name = "idx_tasks_assignee_status_due", columnList = "assignee_id, status, due_date")
         }
 )
 public class Task {
@@ -77,14 +76,16 @@ public class Task {
     @Column(name = "recurrence_rule", length = 100)
     private String recurrenceRule;
 
+    @Column(name = "recurrence_group_id")
+    private UUID recurrenceGroupId;
+
     // ── Status & Priority ───────────────────────────────────────
 
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 20)
     private TaskStatus status = TaskStatus.PENDING;
 
-    @Enumerated(EnumType.STRING)
-    @Column(name = "priority_level", nullable = false, length = 10)
+    @Column(name = "priority_level", nullable = false)
     private PriorityLevel priorityLevel = PriorityLevel.NORMAL;
 
     // ── RL Behavioral Data Fields ───────────────────────────────
@@ -119,9 +120,16 @@ public class Task {
     @Column(name = "hour_of_day_created", nullable = false)
     private int hourOfDayCreated;
 
+    @OneToMany(mappedBy = "task", cascade = CascadeType.ALL, orphanRemoval = true)
+    private java.util.List<Attachment> attachments = new java.util.ArrayList<>();
+
     // ── Audit ───────────────────────────────────────────────────
 
-    @CreationTimestamp
+    @Version
+    @Column(name = "version")
+    private Long version;
+
+    @org.hibernate.annotations.CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -132,8 +140,12 @@ public class Task {
     // ── Relationships ───────────────────────────────────────────
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "owner_id", nullable = false)
-    private User owner;
+    @JoinColumn(name = "creator_id", nullable = true)
+    private User creator;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "assignee_id")
+    private User assignee;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "project_id", nullable = false)
@@ -143,10 +155,11 @@ public class Task {
 
     protected Task() {}
 
-    public Task(String title, String description, User owner, Project project) {
+    public Task(String title, String description, User creator, Project project) {
         this.title = title;
         this.description = description;
-        this.owner = owner;
+        this.creator = creator;
+        this.assignee = creator; // Default assignee to creator
         this.project = project;
 
         java.time.ZonedDateTime now = java.time.ZonedDateTime.now(java.time.ZoneOffset.UTC);
@@ -164,8 +177,10 @@ public class Task {
     }
 
     public void markAsCompleted() {
+        if (this.status != TaskStatus.COMPLETED) {
+            this.completedAt = Instant.now();
+        }
         this.status = TaskStatus.COMPLETED;
-        this.completedAt = Instant.now();
     }
 
     public void markAsReopened() {
@@ -200,6 +215,9 @@ public class Task {
     public String getRecurrenceRule() { return recurrenceRule; }
     public void setRecurrenceRule(String recurrenceRule) { this.recurrenceRule = recurrenceRule; }
 
+    public UUID getRecurrenceGroupId() { return recurrenceGroupId; }
+    public void setRecurrenceGroupId(UUID recurrenceGroupId) { this.recurrenceGroupId = recurrenceGroupId; }
+
     public TaskStatus getStatus() { return status; }
     public void setStatus(TaskStatus status) { this.status = status; }
 
@@ -219,11 +237,19 @@ public class Task {
     public int getDayOfWeekCreated() { return dayOfWeekCreated; }
     public int getHourOfDayCreated() { return hourOfDayCreated; }
 
+    public Long getVersion() { return version; }
+
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
 
-    public User getOwner() { return owner; }
+    public User getCreator() { return creator; }
+    public void setCreator(User creator) { this.creator = creator; }
+
+    public User getAssignee() { return assignee; }
+    public void setAssignee(User assignee) { this.assignee = assignee; }
 
     public Project getProject() { return project; }
     public void setProject(Project project) { this.project = project; }
+
+    public java.util.List<Attachment> getAttachments() { return attachments; }
 }

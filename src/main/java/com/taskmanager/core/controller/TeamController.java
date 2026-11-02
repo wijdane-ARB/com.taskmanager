@@ -43,12 +43,37 @@ public class TeamController {
         return ResponseEntity.ok(ApiResponse.ok(teamService.getMyTeams(currentUserId)));
     }
 
+    @GetMapping("/summary")
+    public ResponseEntity<ApiResponse<java.util.Map<String, Object>>> getTeamSummary(
+            @AuthenticationPrincipal UUID currentUserId
+    ) {
+        return ResponseEntity.ok(ApiResponse.ok(teamService.getTeamSummary(currentUserId)));
+    }
+
     @GetMapping("/{teamId}")
     public ResponseEntity<ApiResponse<TeamResponse>> getTeam(
             @AuthenticationPrincipal UUID currentUserId,
             @PathVariable UUID teamId
     ) {
         return ResponseEntity.ok(ApiResponse.ok(teamService.getTeamById(currentUserId, teamId)));
+    }
+
+    @PatchMapping("/{teamId}")
+    public ResponseEntity<ApiResponse<TeamResponse>> updateTeam(
+            @AuthenticationPrincipal UUID currentUserId,
+            @PathVariable UUID teamId,
+            @jakarta.validation.Valid @RequestBody com.taskmanager.core.dto.request.UpdateTeamRequest request
+    ) {
+        return ResponseEntity.ok(ApiResponse.ok("Team renamed", teamService.updateTeam(currentUserId, teamId, request.name())));
+    }
+
+    @DeleteMapping("/{teamId}")
+    public ResponseEntity<ApiResponse<Void>> deleteTeam(
+            @AuthenticationPrincipal UUID currentUserId,
+            @PathVariable UUID teamId
+    ) {
+        teamService.deleteTeam(currentUserId, teamId);
+        return ResponseEntity.ok(ApiResponse.ok("Team deleted", null));
     }
 
     @GetMapping("/{teamId}/members")
@@ -60,13 +85,13 @@ public class TeamController {
     }
 
     @DeleteMapping("/{teamId}/members/{userId}")
-    public ResponseEntity<Void> removeMember(
+    public ResponseEntity<ApiResponse<Void>> removeMember(
             @AuthenticationPrincipal UUID currentUserId,
             @PathVariable UUID teamId,
             @PathVariable UUID userId
     ) {
         teamService.removeMember(currentUserId, teamId, userId);
-        return ResponseEntity.noContent().build();
+        return ResponseEntity.ok(ApiResponse.ok("Member removed", null));
     }
 
     @PostMapping("/{teamId}/invites")

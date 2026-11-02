@@ -9,8 +9,10 @@ import com.taskmanager.core.entity.User;
 import com.taskmanager.core.enums.ProjectStatus;
 import com.taskmanager.core.enums.TaskStatus;
 import com.taskmanager.core.exception.ResourceNotFoundException;
+import com.taskmanager.core.exception.ForbiddenException;
 import com.taskmanager.core.repository.ProjectRepository;
 import com.taskmanager.core.repository.TaskRepository;
+import com.taskmanager.core.repository.TeamMemberRepository;
 import com.taskmanager.core.repository.TeamRepository;
 import com.taskmanager.core.repository.UserRepository;
 import com.taskmanager.core.service.ProjectService;
@@ -33,24 +35,27 @@ public class ProjectServiceImpl implements ProjectService {
     private static final List<TaskStatus> TERMINAL_STATUSES =
             List.of(TaskStatus.COMPLETED, TaskStatus.CANCELLED);
 
-    private final ProjectRepository projectRepository;
-    private final TaskRepository    taskRepository;
-    private final UserRepository    userRepository;
-    private final TeamRepository    teamRepository;
-    private final TeamService       teamService;
+    private final ProjectRepository    projectRepository;
+    private final TaskRepository       taskRepository;
+    private final UserRepository       userRepository;
+    private final TeamRepository       teamRepository;
+    private final TeamMemberRepository teamMemberRepository;
+    private final TeamService          teamService;
 
     public ProjectServiceImpl(
             ProjectRepository projectRepository,
             TaskRepository taskRepository,
             UserRepository userRepository,
             TeamRepository teamRepository,
+            TeamMemberRepository teamMemberRepository,
             TeamService teamService
     ) {
-        this.projectRepository = projectRepository;
-        this.taskRepository    = taskRepository;
-        this.userRepository    = userRepository;
-        this.teamRepository    = teamRepository;
-        this.teamService       = teamService;
+        this.projectRepository    = projectRepository;
+        this.taskRepository       = taskRepository;
+        this.userRepository       = userRepository;
+        this.teamRepository       = teamRepository;
+        this.teamMemberRepository = teamMemberRepository;
+        this.teamService          = teamService;
     }
 
     // ── Create ────────────────────────────────────────────────────────────
@@ -87,7 +92,8 @@ public class ProjectServiceImpl implements ProjectService {
         Project saved = projectRepository.saveAndFlush(project);
         log.info("Project {} created in team {} by user {}", saved.getId(), teamId, callerId);
 
-        return ProjectResponse.from(saved, 0L);
+        long memberCount = teamMemberRepository.countByTeamId(teamId);
+        return ProjectResponse.from(saved, 0L, memberCount);
     }
 
     // ── Read ──────────────────────────────────────────────────────────────
@@ -105,16 +111,18 @@ public class ProjectServiceImpl implements ProjectService {
 
         Map<UUID, Long> countMap =
                 projectRepository.activeTaskCountMapForTeam(teamId, TERMINAL_STATUSES);
+        long memberCount = teamMemberRepository.countByTeamId(teamId);
 
         return projects.stream()
-                .map(p -> ProjectResponse.from(p, countMap.getOrDefault(p.getId(), 0L)))
+                .map(p -> ProjectResponse.from(p, countMap.getOrDefault(p.getId(), 0L), memberCount))
                 .toList();
     }
 
     @Override
     public ProjectResponse getProjectById(UUID callerId, UUID projectId) {
         Project project = findProjectOrThrow(callerId, projectId);
-        return ProjectResponse.from(project, activeTaskCount(projectId));
+        long memberCount = teamMemberRepository.countByTeamId(project.getTeam().getId());
+        return ProjectResponse.from(project, activeTaskCount(projectId), memberCount);
     }
 
     // ── Update ────────────────────────────────────────────────────────────
@@ -123,13 +131,15 @@ public class ProjectServiceImpl implements ProjectService {
     @Transactional
     public ProjectResponse updateProject(UUID callerId, UUID projectId, UpdateProjectRequest request) {
         Project project = findProjectOrThrow(callerId, projectId);
+        checkOwnerOrCreator(project, callerId);
 
         if (request.name() != null)        project.setName(request.name());
         if (request.description() != null) project.setDescription(request.description());
         if (request.color() != null)       project.setColor(request.color());
 
         Project saved = projectRepository.save(project);
-        return ProjectResponse.from(saved, activeTaskCount(projectId));
+        long memberCount = teamMemberRepository.countByTeamId(saved.getTeam().getId());
+        return ProjectResponse.from(saved, activeTaskCount(projectId), memberCount);
     }
 
     // ── Status Transitions ───────────────────────────────────────────────
@@ -138,21 +148,24 @@ public class ProjectServiceImpl implements ProjectService {
     @Transactional
     public ProjectResponse archiveProject(UUID callerId, UUID projectId) {
         Project project = findProjectOrThrow(callerId, projectId);
+        checkOwnerOrCreator(project, callerId);
 
         if (project.getStatus() == ProjectStatus.ARCHIVED) {
             throw new IllegalStateException("Project is already archived.");
         }
         project.setStatus(ProjectStatus.ARCHIVED);
         Project saved = projectRepository.save(project);
+        long memberCount = teamMemberRepository.countByTeamId(saved.getTeam().getId());
 
         log.info("Project {} archived by user {}", projectId, callerId);
-        return ProjectResponse.from(saved, activeTaskCount(projectId));
+        return ProjectResponse.from(saved, activeTaskCount(projectId), memberCount);
     }
 
     @Override
     @Transactional
     public ProjectResponse completeProject(UUID callerId, UUID projectId) {
         Project project = findProjectOrThrow(callerId, projectId);
+        checkOwnerOrCreator(project, callerId);
 
         if (project.getStatus() == ProjectStatus.COMPLETED) {
             throw new IllegalStateException("Project is already completed.");
@@ -163,15 +176,17 @@ public class ProjectServiceImpl implements ProjectService {
 
         project.setStatus(ProjectStatus.COMPLETED);
         Project saved = projectRepository.save(project);
+        long memberCount = teamMemberRepository.countByTeamId(saved.getTeam().getId());
 
         log.info("Project {} marked completed by user {}", projectId, callerId);
-        return ProjectResponse.from(saved, activeTaskCount(projectId));
+        return ProjectResponse.from(saved, activeTaskCount(projectId), memberCount);
     }
 
     @Override
     @Transactional
     public ProjectResponse reactivateProject(UUID callerId, UUID projectId) {
         Project project = findProjectOrThrow(callerId, projectId);
+        checkOwnerOrCreator(project, callerId);
         UUID teamId = project.getTeam().getId();
 
         if (project.getStatus() == ProjectStatus.ACTIVE) {
@@ -191,9 +206,10 @@ public class ProjectServiceImpl implements ProjectService {
 
         project.setStatus(ProjectStatus.ACTIVE);
         Project saved = projectRepository.save(project);
+        long memberCount = teamMemberRepository.countByTeamId(saved.getTeam().getId());
 
         log.info("Project {} reactivated by user {}", projectId, callerId);
-        return ProjectResponse.from(saved, activeTaskCount(projectId));
+        return ProjectResponse.from(saved, activeTaskCount(projectId), memberCount);
     }
 
     // ── Delete ────────────────────────────────────────────────────────────
@@ -202,8 +218,18 @@ public class ProjectServiceImpl implements ProjectService {
     @Transactional
     public void deleteProject(UUID callerId, UUID projectId) {
         Project project = findProjectOrThrow(callerId, projectId);
+        checkOwnerOrCreator(project, callerId);
+        taskRepository.deleteByProjectId(projectId);
         projectRepository.delete(project);
         log.info("Project {} and all its tasks deleted by user {}", projectId, callerId);
+    }
+
+    private void checkOwnerOrCreator(Project project, UUID callerId) {
+        boolean isOwner = project.getTeam().getOwner() != null && project.getTeam().getOwner().getId() != null && project.getTeam().getOwner().getId().equals(callerId);
+        boolean isCreator = project.getCreatedBy() != null && project.getCreatedBy().getId() != null && project.getCreatedBy().getId().equals(callerId);
+        if (!isOwner && !isCreator) {
+            throw new ForbiddenException("Only the team owner or project creator can perform this action.");
+        }
     }
 
     // ── Private Helpers ──────────────────────────────────────────────────

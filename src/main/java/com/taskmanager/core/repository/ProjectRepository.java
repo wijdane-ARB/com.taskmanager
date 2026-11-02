@@ -3,20 +3,29 @@ package com.taskmanager.core.repository;
 import com.taskmanager.core.entity.Project;
 import com.taskmanager.core.enums.ProjectStatus;
 import com.taskmanager.core.enums.TaskStatus;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.lang.NonNull;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Repository
 public interface ProjectRepository extends JpaRepository<Project, UUID> {
 
+    @EntityGraph(attributePaths = {"createdBy", "team"})
     List<Project> findByTeamIdAndStatusOrderByCreatedAtDesc(UUID teamId, ProjectStatus status);
+
+    @Override
+    @NonNull
+    @EntityGraph(attributePaths = {"createdBy", "team"})
+    Optional<Project> findById(@NonNull UUID id);
 
     long countByTeamIdAndStatus(UUID teamId, ProjectStatus status);
 

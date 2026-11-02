@@ -13,11 +13,7 @@ import java.util.UUID;
  *   EMAIL_VERIFICATION — sent on register, confirms the email address.
  *   PASSWORD_RESET     — sent on /auth/forgot-password.
  *
- * Stored in plaintext. Acceptable because codes are 6 digits with a short
- * TTL (15 min) and the verify/reset endpoints are rate-limited, making
- * brute force impractical within the expiry window. Unlike a password, a
- * leaked row only exposes a code that expires in minutes and is single-use.
- *
+ * Stored as SHA-256 hashes.
  * Old codes for the same user+type are invalidated whenever a new one is
  * issued, so only the most recently sent code ever works.
  */
@@ -40,7 +36,7 @@ public class VerificationCode {
     @JoinColumn(name = "user_id", nullable = false)
     private User user;
 
-    @Column(name = "code", nullable = false, length = 6)
+    @Column(name = "code", nullable = false, length = 64)
     private String code;
 
     @Enumerated(EnumType.STRING)
@@ -52,6 +48,9 @@ public class VerificationCode {
 
     @Column(name = "used", nullable = false)
     private boolean used = false;
+
+    @Column(name = "attempts", nullable = false)
+    private int attempts = 0;
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
@@ -70,8 +69,8 @@ public class VerificationCode {
         return Instant.now().isAfter(expiresAt);
     }
 
-    public boolean isValid(String candidate) {
-        return !used && !isExpired() && code.equals(candidate);
+    public boolean isValid(String hashedCandidate) {
+        return !used && !isExpired() && code.equals(hashedCandidate);
     }
 
     public UUID getId() { return id; }
@@ -81,5 +80,8 @@ public class VerificationCode {
     public Instant getExpiresAt() { return expiresAt; }
     public boolean isUsed() { return used; }
     public void setUsed(boolean used) { this.used = used; }
+    
+    public int getAttempts() { return attempts; }
+    public void setAttempts(int attempts) { this.attempts = attempts; }
     public Instant getCreatedAt() { return createdAt; }
 }

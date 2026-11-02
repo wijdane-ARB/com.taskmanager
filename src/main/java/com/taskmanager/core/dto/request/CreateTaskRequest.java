@@ -22,6 +22,8 @@ public record CreateTaskRequest(
         @NotNull(message = "Project ID is required")
         UUID projectId,
 
+        UUID assigneeId,
+
         Instant dueDate,
 
         Instant scheduledTime,

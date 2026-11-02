@@ -8,15 +8,13 @@ import java.util.UUID;
 
 /**
  * Persisted refresh token. Storing it server-side (vs. a pure stateless JWT)
- * gives us the ability to revoke it immediately on logout or password change —
- * something a pure JWT approach cannot do without a blocklist.
+ * gives us the ability to revoke it immediately on logout or password change.
  *
- * Token rotation strategy:
- *   - Each /auth/refresh call issues a new refresh token and invalidates the old one.
- *   - This limits the blast radius of a stolen token to one use.
+ * Token rotation: each /auth/refresh call issues a new refresh token and
+ * revokes the old one.
  *
- * Cleanup: expired tokens should be purged by a nightly @Scheduled job.
- * The index on expiresAt makes that DELETE query a fast range scan.
+ * FIX: `token` is now length = 64. Since V13 the column stores the SHA-256
+ * hex digest of the raw token (64 chars), not the 36-char UUID.
  */
 @Entity
 @Table(
@@ -34,12 +32,8 @@ public class RefreshToken {
     @Column(name = "id", updatable = false, nullable = false)
     private UUID id;
 
-    /**
-     * The raw token value sent to the client.
-     * Generated as a cryptographically secure random UUID string — not a JWT.
-     * This keeps it opaque and impossible to forge without the DB record.
-     */
-    @Column(name = "token", nullable = false, unique = true, length = 36)
+    /** SHA-256 hex digest of the raw token sent to the client. */
+    @Column(name = "token", nullable = false, unique = true, length = 64)
     private String token;
 
     @ManyToOne(fetch = FetchType.LAZY)
@@ -49,21 +43,19 @@ public class RefreshToken {
     @Column(name = "expires_at", nullable = false)
     private Instant expiresAt;
 
-    /**
-     * Set to true when the token is used to issue a new pair.
-     * A revoked token arriving at /auth/refresh is a signal of token theft —
-     * the entire family should be invalidated (not implemented here yet, but
-     * setting this flag is the prerequisite for that detection).
-     */
     @Column(name = "revoked", nullable = false)
     private boolean revoked = false;
 
     @Column(name = "device_info", length = 255)
-    private String deviceInfo; // Flutter client can send User-Agent or device model
+    private String deviceInfo;
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
+
+    @org.hibernate.annotations.UpdateTimestamp
+    @Column(name = "updated_at", nullable = false)
+    private Instant updatedAt;
 
     protected RefreshToken() {}
 
@@ -78,8 +70,6 @@ public class RefreshToken {
         return Instant.now().isAfter(this.expiresAt);
     }
 
-    // Getters & Setters
-
     public UUID getId()           { return id; }
     public String getToken()      { return token; }
     public User getUser()         { return user; }
@@ -88,4 +78,5 @@ public class RefreshToken {
     public void setRevoked(boolean revoked) { this.revoked = revoked; }
     public String getDeviceInfo() { return deviceInfo; }
     public Instant getCreatedAt() { return createdAt; }
+    public Instant getUpdatedAt() { return updatedAt; }
 }

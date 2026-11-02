@@ -1,0 +1,9 @@
+spring:
+  flyway:
+    baseline-on-migrate: false
+
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false

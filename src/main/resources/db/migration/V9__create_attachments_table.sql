@@ -1,0 +1,1 @@
+CREATE TABLE attachments (id UUID PRIMARY KEY, task_id UUID NOT NULL REFERENCES tasks(id) ON DELETE CASCADE, file_name VARCHAR(255) NOT NULL, file_url VARCHAR(500) NOT NULL, uploaded_at TIMESTAMP WITH TIME ZONE NOT NULL); CREATE INDEX idx_attachments_task_id ON attachments(task_id); 
