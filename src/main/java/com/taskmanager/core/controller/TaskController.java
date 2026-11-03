@@ -4,6 +4,7 @@ import com.taskmanager.core.dto.request.CreateTaskRequest;
 import com.taskmanager.core.dto.request.TaskFilterRequest;
 import com.taskmanager.core.dto.request.UpdateTaskRequest;
 import com.taskmanager.core.dto.response.ApiResponse;
+import com.taskmanager.core.dto.response.AttachmentResponse;
 import com.taskmanager.core.dto.response.TaskResponse;
 import com.taskmanager.core.service.TaskService;
 import jakarta.validation.Valid;
@@ -15,6 +16,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -223,5 +225,26 @@ public class TaskController {
     ) {
         String fileUrl = taskService.addAttachment(currentUserId, taskId, file);
         return ResponseEntity.ok(ApiResponse.ok("Attachment uploaded successfully", fileUrl));
+    }
+
+    /** GET /api/v1/tasks/{taskId}/attachments */
+    @GetMapping("/{taskId}/attachments")
+    public ResponseEntity<ApiResponse<List<AttachmentResponse>>> getAttachments(
+            @AuthenticationPrincipal UUID currentUserId,
+            @PathVariable UUID taskId
+    ) {
+        List<AttachmentResponse> attachments = taskService.getAttachments(currentUserId, taskId);
+        return ResponseEntity.ok(ApiResponse.ok("Attachments retrieved", attachments));
+    }
+
+    /** DELETE /api/v1/tasks/{taskId}/attachments/{attachmentId} */
+    @DeleteMapping("/{taskId}/attachments/{attachmentId}")
+    public ResponseEntity<ApiResponse<Void>> deleteAttachment(
+            @AuthenticationPrincipal UUID currentUserId,
+            @PathVariable UUID taskId,
+            @PathVariable UUID attachmentId
+    ) {
+        taskService.deleteAttachment(currentUserId, taskId, attachmentId);
+        return ResponseEntity.ok(ApiResponse.ok("Attachment deleted successfully", null));
     }
 }

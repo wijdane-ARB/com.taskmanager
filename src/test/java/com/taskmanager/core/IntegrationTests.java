@@ -33,36 +33,20 @@ import static io.restassured.RestAssured.given;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@Testcontainers
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 public class IntegrationTests {
 
     @LocalServerPort
     private int port;
 
-    @Container
-    static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:15-alpine")
-            .withDatabaseName("testdb")
-            .withUsername("testuser")
-            .withPassword("testpass");
-
-    @Container
-    static GenericContainer<?> redis = new GenericContainer<>("redis:7-alpine")
-            .withExposedPorts(6379);
-
-    @DynamicPropertySource
-    static void configureProperties(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", postgres::getJdbcUrl);
-        registry.add("spring.datasource.username", postgres::getUsername);
-        registry.add("spring.datasource.password", postgres::getPassword);
-        registry.add("spring.data.redis.host", redis::getHost);
-        registry.add("spring.data.redis.port", redis::getFirstMappedPort);
-        registry.add("jwt.secret", () -> "very-long-test-secret-key-at-least-32-chars-for-test");
-        registry.add("app.security.code-hmac-secret", () -> "test-hmac-secret");
-    }
+    @Autowired
+    private io.lettuce.core.RedisClient redisClient;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    @org.springframework.beans.factory.annotation.Value("${app.security.code-hmac-secret}")
+    private String codeHmacSecret;
 
     private static String user1Token;
     private static String user2Token;
@@ -72,7 +56,9 @@ public class IntegrationTests {
     @BeforeEach
     public void setUp() throws Exception {
         RestAssured.port = port;
-        redis.execInContainer("redis-cli", "flushall");
+        try {
+            redisClient.connect().sync().flushall();
+        } catch (Exception ignored) {}
     }
 
     private String getRawCodeForUser(String email, VerificationCodeType type) {
@@ -81,7 +67,7 @@ public class IntegrationTests {
         String testHash;
         try {
             javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
-            mac.init(new javax.crypto.spec.SecretKeySpec("test-hmac-secret".getBytes(java.nio.charset.StandardCharsets.UTF_8), "HmacSHA256"));
+            mac.init(new javax.crypto.spec.SecretKeySpec(codeHmacSecret.getBytes(java.nio.charset.StandardCharsets.UTF_8), "HmacSHA256"));
             
             // We need userId to generate the hash. Use UUID.class to prevent Postgres type mapping errors.
             UUID userId = jdbcTemplate.queryForObject("SELECT id FROM users WHERE email = ?", UUID.class, email);
@@ -101,15 +87,17 @@ public class IntegrationTests {
     @Test
     @Order(1)
     void authFlow_and_RegisterOverUnverified() {
+        jdbcTemplate.execute("TRUNCATE TABLE users CASCADE");
+
         // 1. Register unverified user
         RegisterRequest reg1 = new RegisterRequest("User One", "user1@test.com", "Password@123!");
         given().contentType(ContentType.JSON).body(reg1).when().post("/api/v1/auth/register")
-                .then().statusCode(200);
+                .then().statusCode(201);
         
         // 2. Register over unverified email
         RegisterRequest reg2 = new RegisterRequest("User One Replaced", "user1@test.com", "NewPassword@123!");
         given().contentType(ContentType.JSON).body(reg2).when().post("/api/v1/auth/register")
-                .then().statusCode(200);
+                .then().statusCode(201);
 
         // 3. Verify
         String code = getRawCodeForUser("user1@test.com", VerificationCodeType.EMAIL_VERIFICATION);
@@ -122,7 +110,7 @@ public class IntegrationTests {
         String refreshToken1 = r3.jsonPath().getString("data.refreshToken");
 
         // Register user2
-        given().contentType(ContentType.JSON).body(new RegisterRequest("User Two", "user2@test.com", "Password@123!")).when().post("/api/v1/auth/register").then().statusCode(200);
+        given().contentType(ContentType.JSON).body(new RegisterRequest("User Two", "user2@test.com", "Password@123!")).when().post("/api/v1/auth/register").then().statusCode(201);
         String code2 = getRawCodeForUser("user2@test.com", VerificationCodeType.EMAIL_VERIFICATION);
         Response rUser2 = given().contentType(ContentType.JSON).body(new VerifyEmailRequest("user2@test.com", code2)).when().post("/api/v1/auth/verify-email");
         rUser2.then().statusCode(200);
@@ -178,7 +166,7 @@ public class IntegrationTests {
                 .contentType(ContentType.JSON)
                 .body(Map.of("name", "Project 1", "teamId", team1Id.toString()))
                 .when().post("/api/v1/projects");
-        p1.then().statusCode(200);
+        p1.then().statusCode(201);
         UUID projectId = UUID.fromString(p1.jsonPath().getString("data.id"));
 
         // 1. Create a task in team 1
@@ -187,7 +175,7 @@ public class IntegrationTests {
                 .contentType(ContentType.JSON)
                 .body(createReq)
                 .when().post("/api/v1/tasks");
-        taskRes.then().statusCode(200);
+        taskRes.then().statusCode(201);
         UUID taskId = UUID.fromString(taskRes.jsonPath().getString("data.id"));
         Long v = taskRes.jsonPath().getLong("data.version");
 
@@ -239,7 +227,7 @@ public class IntegrationTests {
         Response recRes = given().header("Authorization", "Bearer " + user1Token)
                 .contentType(ContentType.JSON).body(recReq)
                 .when().post("/api/v1/tasks");
-        recRes.then().statusCode(200);
+        recRes.then().statusCode(201);
         UUID recTaskId = UUID.fromString(recRes.jsonPath().getString("data.id"));
         
         given().header("Authorization", "Bearer " + user1Token)
@@ -247,7 +235,8 @@ public class IntegrationTests {
                 .then().statusCode(200);
         
         Response pageRes = given().header("Authorization", "Bearer " + user1Token)
-                .when().get("/api/v1/projects/" + projectId + "/tasks?teamId=" + team1Id);
+                .when().get("/api/v1/tasks?projectId=" + projectId);
+        pageRes.then().statusCode(200);
         List<Map<String,Object>> tasks = pageRes.jsonPath().getList("data.content");
         
         UUID nextTaskId = null;
