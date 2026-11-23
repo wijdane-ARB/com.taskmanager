@@ -544,17 +544,20 @@ public class TaskServiceImpl implements TaskService {
             throw new IllegalArgumentException(
                     "Only COMPLETED tasks can be reopened. Current status: " + task.getStatus());
         }
-        task.markAsReopened();
-
-        if (task.getRecurrenceGroupId() != null) {
-            taskRepository.cancelFutureOccurrences(task.getRecurrenceGroupId(), task.getId());
-        }
+        reopenCompletedTask(task);
 
         Task saved = taskRepository.save(task);
         logActivity(saved, callerId, "REOPENED", "Task reopened");
         log.info("Task {} reopened (total reopens: {}) for user {}", saved.getId(), saved.getReopenedCount(), callerId);
         broadcastTaskChange(saved, "TASK_UPDATED");
         return TaskResponse.from(saved);
+    }
+
+    private void reopenCompletedTask(Task task) {
+        task.markAsReopened();
+        if (task.getRecurrenceGroupId() != null) {
+            taskRepository.cancelFutureOccurrences(task.getRecurrenceGroupId(), task.getId());
+        }
     }
 
     @Override
@@ -757,7 +760,7 @@ public class TaskServiceImpl implements TaskService {
                 if (current != TaskStatus.COMPLETED) {
                     throw new IllegalStateException("Only COMPLETED tasks can be reopened.");
                 }
-                task.markAsReopened();
+                reopenCompletedTask(task);
             }
             case CANCELLED   -> task.setStatus(TaskStatus.CANCELLED);
             case PENDING     -> task.setStatus(TaskStatus.PENDING);
