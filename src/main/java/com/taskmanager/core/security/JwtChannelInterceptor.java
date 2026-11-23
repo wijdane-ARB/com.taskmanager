@@ -12,6 +12,7 @@ import org.springframework.messaging.simp.stomp.StompHeaderAccessor;
 import org.springframework.messaging.support.ChannelInterceptor;
 import org.springframework.messaging.support.MessageHeaderAccessor;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.stereotype.Component;
 
@@ -64,10 +65,12 @@ public class JwtChannelInterceptor implements ChannelInterceptor {
 
     private final JwtService jwtService;
     private final TeamService teamService;
+    private final WebSocketSessionRegistry sessions;
 
-    public JwtChannelInterceptor(JwtService jwtService, TeamService teamService) {
+    public JwtChannelInterceptor(JwtService jwtService, TeamService teamService, WebSocketSessionRegistry sessions) {
         this.jwtService = jwtService;
         this.teamService = teamService;
+        this.sessions = sessions;
     }
 
     @Override
@@ -79,13 +82,14 @@ public class JwtChannelInterceptor implements ChannelInterceptor {
             return message;
         }
 
-        if (StompCommand.CONNECT.equals(accessor.getCommand())) {
+        StompCommand command = accessor.getCommand();
+        if (command == StompCommand.CONNECT || command == StompCommand.STOMP) {
             authenticateConnect(accessor);
-            if (accessor.getUser() == null) {
-                log.warn("Anonymous CONNECT attempt — denying");
-                throw new IllegalArgumentException("Unauthorized"); // Throws ERROR frame and drops connection
-            }
             return message;
+        }
+
+        if (command != StompCommand.DISCONNECT && !sessions.isActive(accessor.getSessionId())) {
+            return null;
         }
 
         if (StompCommand.SUBSCRIBE.equals(accessor.getCommand())) {
@@ -106,44 +110,31 @@ public class JwtChannelInterceptor implements ChannelInterceptor {
     }
 
     private void authenticateConnect(StompHeaderAccessor accessor) {
+        Principal principal = accessor.getUser();
         String authHeader = accessor.getFirstNativeHeader("Authorization");
 
-        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
-            return; // leave accessor.getUser() null — handled as denial at SUBSCRIBE time
+        if (authHeader != null && authHeader.startsWith("Bearer ")) {
+            String token = authHeader.substring(7);
+            if (!jwtService.isTokenValid(token)) {
+                log.warn("STOMP CONNECT with invalid/expired token");
+                throw new IllegalArgumentException("Unauthorized");
+            }
+            principal = UsernamePasswordAuthenticationToken.authenticated(
+                    jwtService.extractUserId(token), null, List.of(new SimpleGrantedAuthority("ROLE_USER")));
         }
 
-        String token = authHeader.substring(7);
-
-        if (!jwtService.isTokenValid(token)) {
-            log.warn("STOMP CONNECT with invalid/expired token");
-            return;
+        if (!(principal instanceof Authentication authentication)
+                || !authentication.isAuthenticated()
+                || !(authentication.getPrincipal() instanceof UUID userId)) {
+            log.warn("STOMP CONNECT without an authenticated UUID principal — denying");
+            throw new IllegalArgumentException("Unauthorized");
+        }
+        if (!sessions.bindUser(accessor.getSessionId(), userId)) {
+            throw new IllegalArgumentException("Unauthorized");
         }
 
-        UUID userId = jwtService.extractUserId(token);
-        UsernamePasswordAuthenticationToken auth =
-                new UsernamePasswordAuthenticationToken(
-                        userId, null, List.of(new SimpleGrantedAuthority("ROLE_USER")));
-
-        // Deliberately NOT calling SecurityContextHolder.getContext()
-        // .setAuthentication(auth) here. The STOMP inbound channel runs on
-        // a shared, pooled set of threads across every active session —
-        // unlike a normal HTTP request, there's no per-request context
-        // teardown, so anything written to the (thread-local) security
-        // context here can leak into the next unrelated STOMP frame
-        // processed on the same pooled thread, potentially attributing it
-        // to the wrong user.
-        //
-        // accessor.setUser(auth) below is sufficient and is the only thing
-        // anything in this codebase actually reads: isSubscribeAuthorized()
-        // uses accessor.getUser(), and every @MessageMapping handler in
-        // ChatController resolves the caller via the Principal parameter
-        // Spring derives from that same accessor field — never via
-        // SecurityContextHolder. If a future STOMP handler is added that
-        // reaches for SecurityContextHolder out of habit (very natural,
-        // since every REST controller in this codebase does exactly that
-        // via @AuthenticationPrincipal), it should read from the message's
-        // Principal/accessor instead, not this thread-local.
-        accessor.setUser(auth);
+        // The accessor keeps the principal with the STOMP session across pooled threads.
+        accessor.setUser(authentication);
     }
 
     /**

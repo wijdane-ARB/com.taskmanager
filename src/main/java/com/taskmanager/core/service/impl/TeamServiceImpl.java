@@ -10,6 +10,7 @@ import com.taskmanager.core.entity.TeamInvite;
 import com.taskmanager.core.entity.TeamMember;
 import com.taskmanager.core.entity.User;
 import com.taskmanager.core.enums.InviteStatus;
+import com.taskmanager.core.event.TeamMemberRemovedEvent;
 import com.taskmanager.core.exception.ResourceNotFoundException;
 import com.taskmanager.core.exception.ForbiddenException;
 import com.taskmanager.core.repository.TeamInviteRepository;
@@ -324,15 +325,12 @@ public class TeamServiceImpl implements TeamService {
             throw new IllegalStateException("The team owner cannot be removed. Delete the team instead.");
         }
 
-        teamMemberRepository.deleteByTeamIdAndUserId(teamId, memberUserId);
+        int removed = teamMemberRepository.deleteByTeamIdAndUserId(teamId, memberUserId);
         taskRepository.unassignUserFromTeamTasks(memberUserId, teamId);
-        log.info("User {} removed from team {} by owner {}", memberUserId, teamId, callerId);
-        
-        // ACCEPTED GAP: 
-        // We do not actively kill the user's STOMP session here. The removed user
-        // will still receive live websocket messages on this team's topic until they 
-        // organically disconnect (e.g. close the app). We accept this minor gap to 
-        // avoid dragging spring-websocket registry dependencies into the core service layer.
+        if (removed > 0) {
+            eventPublisher.publishEvent(new TeamMemberRemovedEvent(teamId, memberUserId));
+            log.info("User {} removed from team {} by owner {}", memberUserId, teamId, callerId);
+        }
     }
 
     // ── Access check ─────────────────────────────────────────────────────

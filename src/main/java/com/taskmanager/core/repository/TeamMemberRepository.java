@@ -2,6 +2,7 @@ package com.taskmanager.core.repository;
 
 import com.taskmanager.core.entity.TeamMember;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -42,5 +43,7 @@ public interface TeamMemberRepository extends JpaRepository<TeamMember, UUID> {
 
     long countByTeamId(UUID teamId);
 
-    void deleteByTeamIdAndUserId(UUID teamId, UUID userId);
+    @Modifying
+    @Query("DELETE FROM TeamMember tm WHERE tm.team.id = :teamId AND tm.user.id = :userId")
+    int deleteByTeamIdAndUserId(@Param("teamId") UUID teamId, @Param("userId") UUID userId);
 }
