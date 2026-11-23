@@ -6,6 +6,7 @@ import com.taskmanager.core.entity.Task;
 import com.taskmanager.core.entity.Team;
 import com.taskmanager.core.entity.TeamMember;
 import com.taskmanager.core.entity.User;
+import com.taskmanager.core.enums.TaskStatus;
 import com.taskmanager.core.security.JwtService;
 import io.github.bucket4j.redis.lettuce.cas.LettuceBasedProxyManager;
 import io.restassured.path.json.JsonPath;
@@ -24,6 +25,9 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.context.WebApplicationContext;
 
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -33,18 +37,19 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.springframework.test.web.servlet.setup.MockMvcBuilders.webAppContextSetup;
 
 @SpringBootTest(properties = {
-        "spring.datasource.url=jdbc:h2:mem:task-edit-version",
+        "spring.datasource.url=jdbc:h2:mem:task-updates",
         "spring.datasource.driver-class-name=org.h2.Driver",
         "spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.H2Dialect",
         "spring.jpa.hibernate.ddl-auto=create-drop",
         "spring.flyway.enabled=false"
 })
-class TaskEditVersionTest {
+class TaskUpdateTest {
 
     @Autowired
     private WebApplicationContext webContext;
@@ -66,7 +71,7 @@ class TaskEditVersionTest {
 
     @Test
     void consecutiveEditsReturnAndBroadcastTheirSavedVersions() throws Exception {
-        Task task = createTask();
+        Task task = createTask(null);
         UUID taskId = task.getId();
         String token = jwtService.generateAccessToken(task.getCreator().getId());
         MockMvc mvc = webAppContextSetup(webContext).apply(springSecurity()).build();
@@ -89,9 +94,55 @@ class TaskEditVersionTest {
                 .containsExactly(firstVersion, secondVersion);
     }
 
-    private Task createTask() {
+    @Test
+    void patchReopenCancelsOldOccurrenceBeforeCompletingAgain() throws Exception {
+        Task task = createTask("DAILY");
+        UUID taskId = task.getId();
+        UUID groupId = task.getRecurrenceGroupId();
+        String token = jwtService.generateAccessToken(task.getCreator().getId());
+        MockMvc mvc = webAppContextSetup(webContext).apply(springSecurity()).build();
+
+        completeTask(mvc, token, taskId);
+        List<UUID> firstOccurrences = pendingOccurrenceIds(groupId);
+        assertThat(firstOccurrences).hasSize(1);
+        UUID oldOccurrenceId = firstOccurrences.getFirst();
+        long completedVersion = entityManager.find(Task.class, taskId).getVersion();
+
+        mvc.perform(patch("/api/v1/tasks/{taskId}", taskId)
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"status":"REOPENED","version":%d}
+                                """.formatted(completedVersion)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("REOPENED"));
+
+        assertThat(entityManager.find(Task.class, oldOccurrenceId).getStatus()).isEqualTo(TaskStatus.CANCELLED);
+        assertThat(pendingOccurrenceIds(groupId)).isEmpty();
+
+        completeTask(mvc, token, taskId);
+        assertThat(pendingOccurrenceIds(groupId)).hasSize(1).doesNotContain(oldOccurrenceId);
+    }
+
+    private List<UUID> pendingOccurrenceIds(UUID groupId) {
+        return entityManager.createQuery("""
+                        select t.id from Task t where t.recurrenceGroupId = :groupId and t.status = :status
+                        """, UUID.class)
+                .setParameter("groupId", groupId)
+                .setParameter("status", TaskStatus.PENDING)
+                .getResultList();
+    }
+
+    private void completeTask(MockMvc mvc, String token, UUID taskId) throws Exception {
+        mvc.perform(post("/api/v1/tasks/{taskId}/complete", taskId)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("COMPLETED"));
+    }
+
+    private Task createTask(String recurrenceRule) {
         return new TransactionTemplate(transactionManager).execute(transaction -> {
-            User owner = new User("Task Owner", "task-owner@example.com", "unused-password-hash");
+            User owner = new User("Task Owner", "task-owner-" + UUID.randomUUID() + "@example.com", "unused-password-hash");
             entityManager.persist(owner);
             Team team = new Team("Task Team", owner);
             entityManager.persist(team);
@@ -99,6 +150,12 @@ class TaskEditVersionTest {
             Project project = new Project("Task Project", null, team, owner);
             entityManager.persist(project);
             Task task = new Task("Original title", null, owner, project);
+            if (recurrenceRule != null) {
+                task.setDueDate(Instant.now().plus(1, ChronoUnit.DAYS));
+                task.setRecurring(true);
+                task.setRecurrenceRule(recurrenceRule);
+                task.setRecurrenceGroupId(UUID.randomUUID());
+            }
             entityManager.persist(task);
             return task;
         });
