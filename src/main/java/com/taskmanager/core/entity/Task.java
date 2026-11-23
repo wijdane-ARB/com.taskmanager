@@ -62,6 +62,9 @@ public class Task {
     @Column(name = "description", length = 2000)
     private String description;
 
+    @Column(name = "github_url", columnDefinition = "TEXT")
+    private String githubUrl;
+
     // ── Core scheduling fields ──────────────────────────────────
 
     @Column(name = "due_date")
@@ -202,6 +205,8 @@ public class Task {
 
     public String getDescription() { return description; }
     public void setDescription(String description) { this.description = description; }
+    public String getGithubUrl() { return githubUrl; }
+    public void setGithubUrl(String githubUrl) { this.githubUrl = githubUrl; }
 
     public Instant getDueDate() { return dueDate; }
     public void setDueDate(Instant dueDate) { this.dueDate = dueDate; }

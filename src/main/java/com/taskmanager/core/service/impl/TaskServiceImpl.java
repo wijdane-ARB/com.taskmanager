@@ -30,13 +30,17 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.databind.JsonNode;
 
+import java.net.URI;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -56,6 +60,8 @@ import java.util.stream.Collectors;
 public class TaskServiceImpl implements TaskService {
 
     private static final Logger log = LoggerFactory.getLogger(TaskServiceImpl.class);
+    private static final Pattern GITHUB_ITEM_PATH =
+            Pattern.compile("/[A-Za-z0-9-]+/(?!\\.{1,2}/)[A-Za-z0-9_.-]+/(issues|pull)/[1-9][0-9]*/?");
 
     private final TaskRepository    taskRepository;
     private final ProjectRepository projectRepository;
@@ -308,6 +314,14 @@ public class TaskServiceImpl implements TaskService {
             task.setDescription(request.description());
             changedFields.add("description");
         }
+        JsonNode githubUrlPatch = request.githubUrl();
+        if (githubUrlPatch != null && !githubUrlPatch.isMissingNode()) {
+            String githubUrl = githubUrlPatch.isNull() ? null : validateGithubUrl(githubUrlPatch);
+            if (!Objects.equals(githubUrl, task.getGithubUrl())) {
+                task.setGithubUrl(githubUrl);
+                changedFields.add("githubUrl");
+            }
+        }
         if (request.dueDate() != null && !request.dueDate().equals(task.getDueDate())) {
             if (task.getDueDate() != null && request.dueDate().isAfter(task.getDueDate())) {
                 task.recordSnooze();
@@ -403,6 +417,28 @@ public class TaskServiceImpl implements TaskService {
         }
         broadcastTaskChange(saved, cancelled ? "TASK_DELETED" : "TASK_UPDATED");
         return TaskResponse.from(saved);
+    }
+
+    private String validateGithubUrl(JsonNode value) {
+        String error = "githubUrl must be an HTTPS GitHub issue or pull request URL.";
+        if (!value.isString()) {
+            throw new IllegalArgumentException(error);
+        }
+        String url = value.asString();
+        URI uri;
+        try {
+            uri = URI.create(url);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException(error);
+        }
+        if (!"https".equalsIgnoreCase(uri.getScheme())
+                || !"github.com".equalsIgnoreCase(uri.getHost())
+                || uri.getUserInfo() != null
+                || (uri.getPort() != -1 && uri.getPort() != 443)
+                || !GITHUB_ITEM_PATH.matcher(uri.getRawPath()).matches()) {
+            throw new IllegalArgumentException(error);
+        }
+        return url;
     }
     
     @Override
