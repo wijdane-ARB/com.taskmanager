@@ -77,11 +77,8 @@ spring:
             enable: true
 
 # ── JWT ──────────────────────────────────────────────────────────────────
-# FIX: jwt.secret was missing and JwtService's @Value has no default, so the
-# app failed at startup. The default below is DEV ONLY — JwtService refuses
-# to boot with it under the "prod" profile, so set JWT_SECRET there.
 jwt:
-  secret: ${JWT_SECRET:your-very-long-dev-secret-key-at-least-32-chars}
+  secret: ${JWT_SECRET}
   access-token-expiry-seconds: ${JWT_ACCESS_EXPIRY_SECONDS:900}
   refresh-token-expiry-days: ${JWT_REFRESH_EXPIRY_DAYS:30}
 

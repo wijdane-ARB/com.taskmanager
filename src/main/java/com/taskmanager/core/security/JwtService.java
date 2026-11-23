@@ -26,24 +26,25 @@ import java.util.UUID;
  * For production, prefer RS256 with a key pair so other services can verify
  * tokens without sharing the signing secret.
  *
- * Required application.properties entries:
- *   jwt.secret=<at-least-32-character-random-string>
- *   jwt.access-token-expiry-seconds=900
+ * Set JWT_SECRET to a random signing secret with at least 32 UTF-8 bytes.
  */
 @Service
 public class JwtService {
+    private static final String OLD_DEVELOPMENT_SECRET = "your-very-long-dev-secret-key-at-least-32-chars";
+
 
     private final SecretKey signingKey;
     private final long accessTokenExpirySeconds;
 
     public JwtService(
             @Value("${jwt.secret}") String secret,
-            @Value("${jwt.access-token-expiry-seconds:900}") long accessTokenExpirySeconds,
-            org.springframework.core.env.Environment env
+            @Value("${jwt.access-token-expiry-seconds:900}") long accessTokenExpirySeconds
     ) {
-        if (java.util.Arrays.asList(env.getActiveProfiles()).contains("prod") &&
-            secret.equals("your-very-long-dev-secret-key-at-least-32-chars")) {
-            throw new IllegalStateException("JWT Secret must be securely configured in production profile! Overwrite jwt.secret.");
+        if (secret.isBlank()) {
+            throw new IllegalStateException("JWT_SECRET must not be blank.");
+        }
+        if (OLD_DEVELOPMENT_SECRET.equals(secret.strip())) {
+            throw new IllegalStateException("JWT_SECRET must not use the old development key.");
         }
 
         // Keys.hmacShaKeyFor requires at least 32 bytes for HS256
