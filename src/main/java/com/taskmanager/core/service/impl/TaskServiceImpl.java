@@ -396,7 +396,8 @@ public class TaskServiceImpl implements TaskService {
             }
         }
 
-        Task saved = taskRepository.save(task);
+        // Flush so Hibernate advances the version before the response and event are built.
+        Task saved = taskRepository.saveAndFlush(task);
         if (!changedFields.isEmpty()) {
             logActivity(saved, callerId, "UPDATED", "Updated fields: " + String.join(", ", changedFields));
         }
