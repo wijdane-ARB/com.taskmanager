@@ -1,5 +1,6 @@
 package com.taskmanager.core.dto.response;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.taskmanager.core.entity.Task;
 import com.taskmanager.core.enums.PriorityLevel;
 import com.taskmanager.core.enums.TaskStatus;
@@ -16,6 +17,8 @@ public record TaskResponse(
         UUID id,
         String title,
         String description,
+        @JsonInclude(JsonInclude.Include.ALWAYS)
+        String githubUrl,
         UUID projectId,
         String projectName,
         UUID creatorId,
@@ -68,6 +71,7 @@ public record TaskResponse(
                 task.getId(),
                 task.getTitle(),
                 task.getDescription(),
+                task.getGithubUrl(),
                 task.getProject().getId(),
                 task.getProject().getName(),
                 task.getCreator() != null ? task.getCreator().getId() : null,

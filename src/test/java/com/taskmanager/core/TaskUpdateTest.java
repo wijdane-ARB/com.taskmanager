@@ -13,6 +13,8 @@ import io.restassured.path.json.JsonPath;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -21,6 +23,7 @@ import org.springframework.http.MediaType;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.context.WebApplicationContext;
@@ -32,6 +35,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -122,6 +126,79 @@ class TaskUpdateTest {
 
         completeTask(mvc, token, taskId);
         assertThat(pendingOccurrenceIds(groupId)).hasSize(1).doesNotContain(oldOccurrenceId);
+    }
+
+    @Test
+    void githubUrlCanBeSetReplacedPreservedAndCleared() throws Exception {
+        Task task = createTask(null);
+        MockMvc mvc = webAppContextSetup(webContext).apply(springSecurity()).build();
+        String issue = "https://github.com/octocat/example/issues/7#issuecomment-123";
+        String pullRequest = "https://github.com/octocat/example/pull/8";
+
+        long version = responseVersion(patchTask(mvc, task,
+                """
+                {"version":%d,"githubUrl":"%s"}
+                """.formatted(task.getVersion(), issue))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.githubUrl").value(issue)));
+        assertThat(entityManager.find(Task.class, task.getId()).getGithubUrl()).isEqualTo(issue);
+
+        version = responseVersion(patchTask(mvc, task,
+                """
+                {"version":%d,"githubUrl":"%s"}
+                """.formatted(version, pullRequest))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.githubUrl").value(pullRequest)));
+
+        version = responseVersion(patchTask(mvc, task,
+                """
+                {"version":%d,"title":"Unrelated edit"}
+                """.formatted(version))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.githubUrl").value(pullRequest)));
+        assertThat(entityManager.find(Task.class, task.getId()).getGithubUrl()).isEqualTo(pullRequest);
+
+        patchTask(mvc, task,
+                """
+                {"version":%d,"githubUrl":null}
+                """.formatted(version))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.githubUrl").hasJsonPath())
+                .andExpect(jsonPath("$.data.githubUrl").value(nullValue()));
+        assertThat(entityManager.find(Task.class, task.getId()).getGithubUrl()).isNull();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "\"http://github.com/octocat/example/issues/7\"",
+            "\"https://github.com.evil.example/octocat/example/issues/7\"",
+            "\"https://github.com/octocat/example/discussions/7\"",
+            "\"https://github.com/octocat/example/pull/not-a-number\"",
+            "7"
+    })
+    void rejectsInvalidGithubUrls(String linkJson) throws Exception {
+        Task task = createTask(null);
+        MockMvc mvc = webAppContextSetup(webContext).apply(springSecurity()).build();
+
+        patchTask(mvc, task,
+                """
+                {"version":%d,"githubUrl":%s}
+                """.formatted(task.getVersion(), linkJson))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("githubUrl must be an HTTPS GitHub issue or pull request URL."));
+        assertThat(entityManager.find(Task.class, task.getId()).getVersion()).isEqualTo(task.getVersion());
+    }
+
+    private ResultActions patchTask(MockMvc mvc, Task task, String body) throws Exception {
+        String token = jwtService.generateAccessToken(task.getCreator().getId());
+        return mvc.perform(patch("/api/v1/tasks/{taskId}", task.getId())
+                .header("Authorization", "Bearer " + token)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body));
+    }
+
+    private long responseVersion(ResultActions response) throws Exception {
+        return JsonPath.from(response.andReturn().getResponse().getContentAsString()).getLong("data.version");
     }
 
     private List<UUID> pendingOccurrenceIds(UUID groupId) {
